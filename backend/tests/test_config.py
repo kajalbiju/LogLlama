@@ -2,8 +2,10 @@ from app.config import (
     DEFAULT_API_KEY,
     DEFAULT_DATABASE_URL,
     DEFAULT_PROJECT_NAME,
+    MAX_RUNTIME_KEY_LENGTH,
     MIN_PRIVILEGED_KEY_LENGTH,
     Settings,
+    is_secure_privileged_key,
 )
 from pydantic import ValidationError
 import pytest
@@ -61,6 +63,26 @@ def test_strong_privileged_keys_are_accepted(monkeypatch):
 
     assert configured.default_runtime_key == runtime_key
     assert configured.admin_api_key == admin_key
+
+
+def test_maximum_length_runtime_key_is_accepted(monkeypatch):
+    runtime_key = "r" * MAX_RUNTIME_KEY_LENGTH
+    monkeypatch.setenv("LOGLLAMA_DEFAULT_RUNTIME_KEY", runtime_key)
+
+    configured = Settings()
+
+    assert configured.default_runtime_key == runtime_key
+    assert is_secure_privileged_key(runtime_key)
+
+
+def test_runtime_key_longer_than_database_column_is_rejected(monkeypatch):
+    runtime_key = "r" * (MAX_RUNTIME_KEY_LENGTH + 1)
+    monkeypatch.setenv("LOGLLAMA_DEFAULT_RUNTIME_KEY", runtime_key)
+
+    with pytest.raises(ValidationError, match="must contain at most 255"):
+        Settings()
+
+    assert not is_secure_privileged_key(runtime_key)
 
 
 @pytest.mark.parametrize("backend", ["memory", "aws", "vault", "openbao"])

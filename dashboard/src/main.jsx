@@ -7,44 +7,41 @@ import {
   Braces,
   CalendarDays,
   Check,
+  CheckCircle2,
+  ChevronDown,
+  CircleDot,
   Clock3,
   Coins,
+  Copy,
+  Database,
   Fingerprint,
   FlaskConical,
-  GitCommit,
   KeyRound,
   ListTree,
   LockKeyhole,
   RefreshCw,
   Search,
-  Server,
   ShieldCheck,
-  SlidersHorizontal,
   Trash2,
   X,
+  XCircle,
+  Zap,
 } from "lucide-react";
 import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 const DEFAULT_RANGE = { amount: 24, unit: "hours" };
-const RANGE_PRESETS = [
-  { label: "5m", minutes: 5 },
-  { label: "30m", minutes: 30 },
-  { label: "1h", minutes: 60 },
-  { label: "6h", minutes: 360 },
-  { label: "24h", minutes: 1440 },
-  { label: "7d", minutes: 10080 },
-];
 function formatMoney(value) {
-  return `$${Number(value || 0).toFixed(6)}`;
+  const number = Number(value || 0);
+  if (number > 0 && number < 0.0001) return `$${number.toFixed(6)}`;
+  return number < 0.01 ? `$${number.toFixed(4)}` : `$${number.toFixed(2)}`;
 }
 
 function formatDate(value) {
   return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
   }).format(new Date(value));
 }
 
@@ -64,6 +61,7 @@ function toMinutes(range) {
 }
 
 function formatRangeLabel(minutes) {
+  if (minutes === 1440) return "Last 24h";
   if (minutes < 60) return `Last ${minutes} min`;
   if (minutes % (24 * 60) === 0) {
     const days = minutes / (24 * 60);
@@ -74,6 +72,33 @@ function formatRangeLabel(minutes) {
     return `Last ${hours} ${hours === 1 ? "hour" : "hours"}`;
   }
   return `Last ${minutes} min`;
+}
+
+function toDateTimeInputValue(date) {
+  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60 * 1000);
+  return localDate.toISOString().slice(0, 16);
+}
+
+function createDefaultAbsoluteRange() {
+  const end = new Date();
+  const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+  return {
+    start: toDateTimeInputValue(start),
+    end: toDateTimeInputValue(end),
+  };
+}
+
+function formatAbsoluteRangeLabel(range) {
+  const start = new Date(range.start);
+  const end = new Date(range.end);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return "Custom range";
+  const formatter = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `${formatter.format(start)} to ${formatter.format(end)}`;
 }
 
 function privacyState(payload) {
@@ -92,15 +117,25 @@ function BrandMark() {
 }
 
 function StatusPill({ status }) {
-  return <span className={`status ${status}`}>{status}</span>;
+  const Icon = status === "error" || status === "rejected"
+    ? XCircle
+    : status === "pending"
+      ? CircleDot
+      : CheckCircle2;
+  return (
+    <span className={`status ${status}`}>
+      <Icon size={12} />
+      {status}
+    </span>
+  );
 }
 
 function MetricCard({ icon: Icon, label, value, detail, tone }) {
   return (
     <section className={`metric ${tone || ""}`}>
       <div className="metricLabel">
-        <Icon size={16} />
         <span>{label}</span>
+        <Icon size={14} />
       </div>
       <strong>{value}</strong>
       <p>{detail}</p>
@@ -125,66 +160,149 @@ function SelectFilter({ label, value, options, onChange }) {
 }
 
 function DurationControl({ value, onChange }) {
-  const minutes = toMinutes(value);
-  const setAmount = (nextValue) => {
-    const parsed = Number(nextValue);
-    if (Number.isNaN(parsed)) return;
-    const max = value.unit === "days" ? 30 : value.unit === "hours" ? 24 * 30 : 60 * 24 * 30;
-    onChange({ ...value, amount: Math.min(max, Math.max(1, parsed)) });
+  const [draftAmount, setDraftAmount] = React.useState(String(value.amount));
+
+  React.useEffect(() => {
+    setDraftAmount(String(value.amount));
+  }, [value.amount]);
+
+  const clampAmount = (amount, unit) => {
+    const max = unit === "days" ? 30 : unit === "hours" ? 720 : 43200;
+    return Math.min(max, Math.max(1, Number(amount) || 1));
   };
-  const setUnit = (unit) => {
-    const max = unit === "days" ? 30 : unit === "hours" ? 24 * 30 : 60 * 24 * 30;
-    onChange({ amount: Math.min(max, Math.max(1, Number(value.amount) || 1)), unit });
+  const commitAmount = (unit = value.unit) => {
+    const amount = clampAmount(draftAmount, unit);
+    setDraftAmount(String(amount));
+    if (amount !== value.amount || unit !== value.unit) onChange({ amount, unit });
   };
 
   return (
-    <div className="durationControl" aria-label="Time range">
-      <label htmlFor="timeRangeAmount">
-        <CalendarDays size={15} />
-        <span>Last</span>
-        <input
-          id="timeRangeAmount"
-          min="1"
-          type="number"
-          value={value.amount}
-          onChange={(event) => setAmount(event.target.value)}
-        />
-        <select aria-label="Time unit" value={value.unit} onChange={(event) => setUnit(event.target.value)}>
-          <option value="minutes">min</option>
-          <option value="hours">hours</option>
-          <option value="days">days</option>
-        </select>
-      </label>
-      <div className="durationPresets" aria-label="Quick ranges">
-        {RANGE_PRESETS.map((preset) => (
-          <button key={preset.label} className={minutes === preset.minutes ? "active" : ""} type="button" onClick={() => onChange(minutesToRange(preset.minutes))}>
-            {preset.label}
-          </button>
-        ))}
-      </div>
+    <div className="durationControl" aria-label="Custom time range">
+      <CalendarDays size={15} />
+      <span>Last</span>
+      <input
+        aria-label="Time range amount"
+        inputMode="numeric"
+        min="1"
+        type="number"
+        value={draftAmount}
+        onBlur={() => commitAmount()}
+        onChange={(event) => setDraftAmount(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") event.currentTarget.blur();
+        }}
+      />
+      <select
+        aria-label="Time range unit"
+        value={value.unit}
+        onChange={(event) => commitAmount(event.target.value)}
+      >
+        <option value="minutes">minutes</option>
+        <option value="hours">hours</option>
+        <option value="days">days</option>
+      </select>
+      <ChevronDown size={14} />
     </div>
   );
 }
 
-function minutesToRange(minutes) {
-  if (minutes % (24 * 60) === 0) return { amount: minutes / (24 * 60), unit: "days" };
-  if (minutes % 60 === 0) return { amount: minutes / 60, unit: "hours" };
-  return { amount: minutes, unit: "minutes" };
+function TimeRangeControl({ mode, onModeChange, relativeRange, onRelativeChange, absoluteRange, onAbsoluteChange }) {
+  return (
+    <div className={`timeRangeControl ${mode}`}>
+      <div className="rangeMode" aria-label="Time range mode">
+        <button
+          aria-pressed={mode === "relative"}
+          className={mode === "relative" ? "active" : ""}
+          type="button"
+          onClick={() => onModeChange("relative")}
+        >
+          Last
+        </button>
+        <button
+          aria-pressed={mode === "between"}
+          className={mode === "between" ? "active" : ""}
+          type="button"
+          onClick={() => onModeChange("between")}
+        >
+          Between
+        </button>
+      </div>
+      {mode === "relative" ? (
+        <DurationControl value={relativeRange} onChange={onRelativeChange} />
+      ) : (
+        <div className="betweenControl" aria-label="Exact date and time range">
+          <CalendarDays size={15} />
+          <label>
+            <span>From</span>
+            <input
+              aria-label="Range start"
+              max={absoluteRange.end}
+              type="datetime-local"
+              value={absoluteRange.start}
+              onChange={(event) => onAbsoluteChange({ ...absoluteRange, start: event.target.value })}
+            />
+          </label>
+          <span className="rangeSeparator">to</span>
+          <label>
+            <span>To</span>
+            <input
+              aria-label="Range end"
+              min={absoluteRange.start}
+              type="datetime-local"
+              value={absoluteRange.end}
+              onChange={(event) => onAbsoluteChange({ ...absoluteRange, end: event.target.value })}
+            />
+          </label>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function RequestRow({ request, selected, onSelect }) {
+  const traceId = request.trace_id || request.request_id || request.external_id || request.id;
+  const isError = request.status === "error" || request.status === "rejected";
   return (
-    <button className={`requestRow ${selected ? "selected" : ""}`} onClick={() => onSelect(request)}>
-      <span>
-        <StatusPill status={request.status} />
-      </span>
-      <span className="modelCell">{display(request.service_name || request.model)}</span>
-      <span className="routeCell">{display(request.route || request.operation)}</span>
-      <span>{display(request.environment, "env n/a")}</span>
-      <span>{display(request.tenant_id, "tenant n/a")}</span>
-      <span>{request.latency_ms} ms</span>
-      <span>{formatDate(request.captured_at)}</span>
-    </button>
+    <tr
+      className={`${request.status} ${selected ? "selected" : ""}`}
+      onClick={() => onSelect(request)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") onSelect(request);
+      }}
+      tabIndex="0"
+      aria-selected={selected}
+    >
+      <td><StatusPill status={request.status} /></td>
+      <td className="timeCell" title={new Date(request.captured_at).toLocaleString()}>{formatDate(request.captured_at)}</td>
+      <td>
+        <div className="providerCell">
+          <span className={`providerMark ${request.provider}`}>{display(request.provider, "?").slice(0, 1).toUpperCase()}</span>
+          <span>
+            <strong>{display(request.model)}</strong>
+            <small>{display(request.provider)}</small>
+          </span>
+        </div>
+      </td>
+      <td>
+        <div className="routeServiceCell">
+          <code>{display(request.route || request.operation)}</code>
+          <small>
+            <span>{display(request.service_name, "unassigned service")}</span>
+            {isError && request.error_type && <strong>{request.error_type}</strong>}
+          </small>
+        </div>
+      </td>
+      <td className="truncateCell" title={request.tenant_id}>{display(request.tenant_id, "—")}</td>
+      <td className="numericCell">{Number(request.latency_ms || 0).toLocaleString()} ms</td>
+      <td className="numericCell">{formatMoney(request.cost_usd)}</td>
+      <td className="numericCell">{compactNumber(request.total_tokens)}</td>
+      <td className="traceCell" title={traceId}>
+        <div className="traceValue">
+          <code>{traceId}</code>
+          <CopyButton className="tableCopy" value={traceId} label="trace ID" />
+        </div>
+      </td>
+    </tr>
   );
 }
 
@@ -192,10 +310,10 @@ function JsonBlock({ title, value, defaultOpen = false }) {
   return (
     <details className="jsonBlock" open={defaultOpen}>
       <summary className="jsonTitle">
-        <Braces size={14} />
+        <ChevronDown size={14} />
         <h3>{title}</h3>
       </summary>
-      <pre>{JSON.stringify(value, null, 2)}</pre>
+      <pre>{typeof value === "string" ? value : JSON.stringify(value ?? {}, null, 2)}</pre>
     </details>
   );
 }
@@ -224,51 +342,247 @@ function TagList({ tags }) {
   );
 }
 
+function CopyButton({ value, label, className = "" }) {
+  const [copied, setCopied] = React.useState(false);
+
+  const copy = async (event) => {
+    event.stopPropagation();
+    await navigator.clipboard.writeText(String(value || ""));
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  };
+
+  return (
+    <button
+      className={`iconButton ${className}`.trim()}
+      type="button"
+      onClick={copy}
+      disabled={!value}
+      aria-label={`Copy ${label}`}
+      title={copied ? `${label} copied` : `Copy ${label}`}
+    >
+      {copied ? <Check size={14} /> : <Copy size={14} />}
+    </button>
+  );
+}
+
+function diagnosisFor(request) {
+  if (request.status !== "error" && request.status !== "rejected") {
+    return {
+      title: "Request completed",
+      hint: null,
+    };
+  }
+
+  const errorText = `${request.error_type || ""} ${request.error_message || ""}`.toLowerCase();
+  if (errorText.includes("model") && (errorText.includes("invalid") || errorText.includes("not found"))) {
+    return {
+      title: "Invalid model requested",
+      hint: "Check the model name or provider routing configuration.",
+    };
+  }
+  if (errorText.includes("api key") || errorText.includes("auth") || errorText.includes("401")) {
+    return {
+      title: "Provider authentication failed",
+      hint: "Check the provider credential configured for this environment.",
+    };
+  }
+  if (errorText.includes("rate") || errorText.includes("429")) {
+    return {
+      title: "Provider rate limit reached",
+      hint: "Reduce request concurrency or review the provider account limits.",
+    };
+  }
+  if (errorText.includes("timeout") || errorText.includes("timed out")) {
+    return {
+      title: "Provider request timed out",
+      hint: "Review timeout settings and provider latency before retrying.",
+    };
+  }
+  return {
+    title: request.error_type || "Provider request failed",
+    hint: "Review the provider error and captured request context.",
+  };
+}
+
+
+function requestExplanations(request) {
+  const inputTokens = Number(request.input_tokens || 0);
+  const outputTokens = Number(request.output_tokens || 0);
+  const totalTokens = Number(request.total_tokens || inputTokens + outputTokens);
+  const cost = Number(request.cost_usd || 0);
+  const retries = Number(request.retry_count || 0);
+  const attempts = retries + 1;
+  const latency = Number(request.latency_ms || 0);
+  const parameters = request.model_parameters || {};
+  const diagnosis = diagnosisFor(request);
+  const reasoningEnabled = Boolean(
+    parameters.reasoning
+      || parameters.reasoning_effort
+      || parameters.thinking_config
+  );
+
+  let costText;
+  if (cost > 0) {
+    costText = `${compactNumber(inputTokens)} input and ${compactNumber(outputTokens)} output tokens were priced for ${display(request.model)}.`;
+  } else if (totalTokens > 0) {
+    costText = `${compactNumber(totalTokens)} tokens were captured, but no matching model price produced an estimate.`;
+  } else if (request.status === "error") {
+    costText = "No billable token usage was reported before this request failed.";
+  } else {
+    costText = "The provider returned no token usage, so cost could not be estimated.";
+  }
+
+  const failureText = request.status === "error" || request.status === "rejected"
+    ? `${diagnosis.title}. ${request.error_type ? `Provider error: ${request.error_type}.` : "No provider error type was supplied."}`
+    : retries > 0
+      ? `The request succeeded after ${attempts} observed attempts.`
+      : "The request completed without a captured provider error or retry.";
+
+  const latencyDrivers = [];
+  if (retries > 0) latencyDrivers.push(`${attempts} attempts added repeated provider round trips`);
+  if (reasoningEnabled) latencyDrivers.push("reasoning or thinking was enabled");
+  if (outputTokens >= 500) latencyDrivers.push(`${compactNumber(outputTokens)} output tokens increased generation time`);
+  if (!latencyDrivers.length) {
+    latencyDrivers.push("no retry, reasoning, or large-output signal was captured");
+  }
+  const latencyText = `${latency.toLocaleString()} ms total; ${latencyDrivers.join("; ")}.`;
+
+  return [
+    { key: "cost", icon: Coins, label: "Why it cost", value: costText },
+    { key: "failure", icon: AlertTriangle, label: "Why it failed", value: failureText },
+    { key: "latency", icon: Clock3, label: "Why it was slow", value: latencyText },
+  ];
+}
+
+function CaptureBlock({ title, value, privacy }) {
+  const state = privacyState(value);
+  const captureKey = title === "Prompt" ? "capture_prompts" : "capture_responses";
+  const legacyCaptureKey = title === "Prompt" ? "capture_prompt" : "capture_response";
+  const captureEnabled = privacy?.[captureKey] ?? privacy?.[legacyCaptureKey];
+  const disabled = state === "disabled" || captureEnabled === false;
+  const message = disabled
+    ? `${title} capture disabled by SDK privacy settings`
+    : `No ${title.toLowerCase()} captured`;
+
+  return (
+    <section className="captureSection">
+      <div className="sectionTitle">
+        <Braces size={15} />
+        <h3>{title}</h3>
+        {state === "truncated" && <span className="truncatedBadge">Truncated</span>}
+      </div>
+      {value && !disabled ? (
+        <pre className="captureContent">{typeof value === "string" ? value : JSON.stringify(value, null, 2)}</pre>
+      ) : (
+        <div className="captureDisabled">
+          <ShieldCheck size={15} />
+          <span>{message}</span>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function RequestDetail({ request }) {
   if (!request) {
     return (
       <aside className="detailPane empty">
-        <Server size={22} />
-        <h2>No trace selected</h2>
-        <p>Select a request to inspect correlation, privacy, usage, prompt, response, and metadata.</p>
+        <div className="emptyIcon"><ListTree size={20} /></div>
+        <h2>Select a request</h2>
+        <p>Choose a row to inspect its prompt, response, correlation data, and privacy settings.</p>
       </aside>
     );
   }
+
+  const requestId = request.request_id || request.external_id || request.id;
+  const traceId = request.trace_id || requestId;
+  const privacy = request.privacy || {};
+  const diagnosis = diagnosisFor(request);
+  const explanations = requestExplanations(request);
+  const isError = request.status === "error" || request.status === "rejected";
 
   return (
     <aside className="detailPane">
       <div className="detailHeader">
         <div>
-          <span className="eyebrow">Inspector</span>
-          <h2>{display(request.route || request.operation)}</h2>
-          <p>
-            {display(request.service_name, "service n/a")} / {display(request.model)}
-          </p>
+          <span className="eyebrow">Request inspector</span>
         </div>
         <StatusPill status={request.status} />
       </div>
 
-      <dl className="details">
-        <div>
-          <dt>Latency</dt>
-          <dd>{request.latency_ms} ms</dd>
-        </div>
-        <div>
-          <dt>Tokens</dt>
-          <dd>{compactNumber(request.total_tokens)}</dd>
-        </div>
-        <div>
-          <dt>Cost</dt>
-          <dd>{formatMoney(request.cost_usd)}</dd>
-        </div>
-      </dl>
+      <section className={`diagnosticSummary ${isError ? "error" : ""}`}>
+        <span className="summaryLabel">Summary</span>
+        <h2>{diagnosis.title}</h2>
+        <p className="summaryModel">
+          <strong>{display(request.provider)}</strong>
+          <span>·</span>
+          {display(request.model)}
+        </p>
+        <p className="summaryMetrics">
+          <span>{Number(request.latency_ms || 0).toLocaleString()} ms</span>
+          <span>{formatMoney(request.cost_usd)}</span>
+          <span>{Number(request.total_tokens || 0).toLocaleString()} tokens</span>
+        </p>
+        <dl className="summaryContext">
+          <div><dt>Route</dt><dd><code>{display(request.route || request.operation)}</code></dd></div>
+          <div><dt>Service</dt><dd>{display(request.service_name, "not set")}</dd></div>
+          <div>
+            <dt>Trace</dt>
+            <dd>
+              <code title={traceId}>{traceId}</code>
+              <CopyButton value={traceId} label="trace ID" />
+            </dd>
+          </div>
+        </dl>
+        {diagnosis.hint && (
+          <div className="debugHint">
+            <AlertTriangle size={14} />
+            <span><strong>Debug hint</strong>{diagnosis.hint}</span>
+          </div>
+        )}
+      </section>
 
-      {request.error_message && (
-        <section className="errorBox">
-          <strong>{request.error_type || "Error"}</strong>
-          <p>{request.error_message}</p>
-        </section>
-      )}
+      <section className="whySection">
+        <div className="sectionTitle">
+          <Zap size={15} />
+          <h3>Why this request</h3>
+        </div>
+        <div className="whyList">
+          {explanations.map(({ key, icon: Icon, label, value }) => (
+            <div className={`whyRow ${key}`} key={key}>
+              <Icon size={15} />
+              <div>
+                <strong>{label}</strong>
+                <p>{value}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="detailSection">
+        <div className="sectionTitle">
+          <CircleDot size={15} />
+          <h3>Request</h3>
+        </div>
+        <FieldGrid
+          items={[
+            { label: "Operation", value: request.operation },
+            { label: "Provider request", value: request.provider_request_id, mono: true },
+            { label: "Attempts", value: Number(request.retry_count || 0) + 1 },
+            { label: "Captured", value: new Date(request.captured_at).toLocaleString() },
+            { label: "Request ID", value: requestId, mono: true },
+            { label: "Input / output", value: `${compactNumber(request.input_tokens)} / ${compactNumber(request.output_tokens)}` },
+          ]}
+        />
+        {request.error_message && (
+          <div className="errorBox">
+            <div><AlertTriangle size={15} /><strong>{request.error_type || "Request failed"}</strong></div>
+            <p>{request.error_message}</p>
+          </div>
+        )}
+      </section>
 
       <section className="detailSection">
         <div className="sectionTitle">
@@ -277,38 +591,35 @@ function RequestDetail({ request }) {
         </div>
         <FieldGrid
           items={[
-            { label: "Tenant", value: request.tenant_id },
+            { label: "Service", value: request.service_name },
+            { label: "Environment", value: request.environment },
+            { label: "Version", value: request.version },
+            { label: "Git SHA", value: request.git_sha, mono: true },
+            { label: "Route", value: request.route, mono: true },
             { label: "User", value: request.user_id },
+            { label: "Tenant", value: request.tenant_id },
             { label: "Session", value: request.session_id, mono: true },
             { label: "Conversation", value: request.conversation_id, mono: true },
-            { label: "Request", value: request.request_id, mono: true },
-            { label: "Trace", value: request.trace_id, mono: true },
             { label: "Span", value: request.span_id, mono: true },
           ]}
         />
       </section>
 
-      <section className="detailSection">
+      <CaptureBlock title="Prompt" value={request.prompt} privacy={privacy} />
+      <CaptureBlock title="Response" value={request.response} privacy={privacy} />
+
+      <section className="metadataSection">
         <div className="sectionTitle">
-          <GitCommit size={15} />
-          <h3>Runtime</h3>
+          <Database size={15} />
+          <h3>Metadata</h3>
         </div>
-        <FieldGrid
-          items={[
-            { label: "Service", value: request.service_name },
-            { label: "Environment", value: request.environment },
-            { label: "Version", value: request.version },
-            { label: "Git SHA", value: request.git_sha, mono: true },
-            { label: "Provider request", value: request.provider_request_id, mono: true },
-            { label: "Attempts", value: Number(request.retry_count || 0) + 1 },
-            { label: "Prompt", value: request.prompt_template },
-            { label: "Prompt version", value: request.prompt_version },
-          ]}
-        />
         <div className="tagsBlock">
           <span>Tags</span>
           <TagList tags={request.tags} />
         </div>
+        <JsonBlock title="Custom metadata" value={request.custom_metadata || {}} />
+        <JsonBlock title="Model parameters" value={request.model_parameters || {}} />
+        <JsonBlock title="Raw request metadata" value={request.request_metadata || {}} />
       </section>
 
       <section className="detailSection">
@@ -317,16 +628,14 @@ function RequestDetail({ request }) {
           <h3>Privacy</h3>
         </div>
         <div className="privacyGrid">
-          <span>Prompt: {privacyState(request.prompt)}</span>
-          <span>Response: {privacyState(request.response)}</span>
-          <span>Sampling: {request.privacy?.sample_rate ?? 1}</span>
+          <div><span>Prompt capture</span><strong>{(privacy.capture_prompts ?? privacy.capture_prompt) === false ? "Disabled" : "Enabled"}</strong></div>
+          <div><span>Response capture</span><strong>{(privacy.capture_responses ?? privacy.capture_response) === false ? "Disabled" : "Enabled"}</strong></div>
+          <div><span>Sample rate</span><strong>{privacy.sample_rate ?? 1}</strong></div>
+          <div><span>Prompt limit</span><strong>{privacy.max_prompt_size ? `${privacy.max_prompt_size} B` : "Default"}</strong></div>
+          <div><span>Response limit</span><strong>{privacy.max_response_size ? `${privacy.max_response_size} B` : "Default"}</strong></div>
+          <div><span>Redacted keys</span><strong>{(privacy.redact_keys ?? privacy.redacted_keys)?.length ?? 0}</strong></div>
         </div>
       </section>
-
-      <JsonBlock title="Prompt" value={request.prompt} defaultOpen />
-      <JsonBlock title="Response" value={request.response} />
-      <JsonBlock title="Model Parameters" value={request.model_parameters || {}} />
-      <JsonBlock title="Custom Metadata" value={request.custom_metadata || {}} />
     </aside>
   );
 }
@@ -497,6 +806,7 @@ function ProviderCredentialsAdmin({ adminKey, onUnauthorized, onLock }) {
             <option value="openai">OpenAI</option>
             <option value="anthropic">Anthropic</option>
             <option value="gemini">Gemini</option>
+            <option value="cursor">Cursor SDK</option>
           </select>
         </label>
         <label>
@@ -642,8 +952,11 @@ function App() {
   const [selected, setSelected] = React.useState(null);
   const [query, setQuery] = React.useState("");
   const deferredQuery = React.useDeferredValue(query.trim());
+  const [timeMode, setTimeMode] = React.useState("relative");
   const [timeRange, setTimeRange] = React.useState(DEFAULT_RANGE);
+  const [absoluteRange, setAbsoluteRange] = React.useState(createDefaultAbsoluteRange);
   const [filters, setFilters] = React.useState({
+    provider: "",
     environment: "",
     service_name: "",
     tenant_id: "",
@@ -658,8 +971,19 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      const rangeMinutes = toMinutes(timeRange);
-      const params = new URLSearchParams({ limit: "100", minutes: String(rangeMinutes) });
+      const params = new URLSearchParams({ limit: "100" });
+      if (timeMode === "between") {
+        const start = new Date(absoluteRange.start);
+        const end = new Date(absoluteRange.end);
+        if (!absoluteRange.start || !absoluteRange.end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+          throw new Error("Choose both a start and end date");
+        }
+        if (start >= end) throw new Error("Start must be earlier than end");
+        params.set("start", start.toISOString());
+        params.set("end", end.toISOString());
+      } else {
+        params.set("minutes", String(toMinutes(timeRange)));
+      }
       Object.entries(filters).forEach(([key, value]) => {
         if (value) params.set(key, value);
       });
@@ -692,22 +1016,39 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [deferredQuery, filters, timeRange]);
+  }, [absoluteRange, deferredQuery, filters, timeMode, timeRange]);
 
   React.useEffect(() => {
     if (view !== "traces") return undefined;
     load();
+    if (timeMode === "between") return undefined;
     const interval = window.setInterval(load, 10000);
     return () => window.clearInterval(interval);
-  }, [load, view]);
+  }, [load, timeMode, view]);
+
+  React.useEffect(() => {
+    const focusSearch = (event) => {
+      if (event.key === "/" && !["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName)) {
+        event.preventDefault();
+        document.getElementById("requestSearch")?.focus();
+      }
+      if (event.key === "Escape" && document.activeElement?.id === "requestSearch") {
+        document.activeElement.blur();
+      }
+    };
+    window.addEventListener("keydown", focusSearch);
+    return () => window.removeEventListener("keydown", focusSearch);
+  }, []);
 
   const filtered = requests;
   const activeFilterCount = Object.values(filters).filter(Boolean).length + (deferredQuery ? 1 : 0);
   const setFilter = (key, value) => setFilters((current) => ({ ...current, [key]: value }));
   const resetFilters = () => {
     setQuery("");
+    setTimeMode("relative");
     setTimeRange(DEFAULT_RANGE);
     setFilters({
+      provider: "",
       environment: "",
       service_name: "",
       tenant_id: "",
@@ -717,7 +1058,13 @@ function App() {
     });
   };
   const rangeMinutes = toMinutes(timeRange);
-  const rangeLabel = formatRangeLabel(rangeMinutes);
+  const rangeLabel = timeMode === "between"
+    ? formatAbsoluteRangeLabel(absoluteRange)
+    : formatRangeLabel(rangeMinutes);
+  const scopeRangeLabel = timeMode === "between"
+    ? rangeLabel
+    : rangeLabel.replace("Last ", "").toLowerCase();
+  const failureCount = Math.round((summary?.error_rate || 0) * (summary?.total_requests || 0));
   const unlockAdmin = React.useCallback(async (candidate) => {
     await adminFetch("/api/admin/provider-credentials", candidate);
     setAdminKey(candidate);
@@ -731,107 +1078,206 @@ function App() {
     setAdminKey("");
     setAdminError("Administrator access was rejected. Enter the current key.");
   }, []);
+  const activeChips = [
+    ...Object.entries(filters)
+      .filter(([, value]) => value)
+      .map(([key, value]) => ({
+        key,
+        label: key === "service_name" ? "service" : key === "tenant_id" ? "tenant" : key,
+        value,
+      })),
+    ...(deferredQuery ? [{ key: "query", label: "search", value: deferredQuery }] : []),
+  ];
 
   return (
     <main className="appShell">
-      <section className="content">
-        <header className="topbar">
-          <div className="topbarLead">
-            <div className="brand compact">
-              <BrandMark />
-              <div>
-                <strong>LogLlama</strong>
-                <span>AI correlation console</span>
-              </div>
-            </div>
-            <div>
-              <span className="eyebrow">Live local capture</span>
-              <h1>{view === "traces" ? "Traces" : view === "credentials" ? "Providers" : "Test approvals"}</h1>
-              <nav className="viewTabs" aria-label="Console views">
-                <button className={view === "traces" ? "active" : ""} type="button" onClick={() => setView("traces")}><ListTree size={15} /><span>Traces</span></button>
-                <button className={view === "credentials" ? "active" : ""} type="button" onClick={() => setView("credentials")}><KeyRound size={15} /><span>Providers</span></button>
-                <button className={view === "tests" ? "active" : ""} type="button" onClick={() => setView("tests")}><FlaskConical size={15} /><span>Tests</span></button>
-              </nav>
-            </div>
+      <header className="appTopbar">
+        <div className="topbarPrimary">
+          <a className="brand compact" href="#" aria-label="LogLlama home">
+            <BrandMark />
+            <strong>LogLlama</strong>
+          </a>
+          <div className="topbarDivider" />
+          <div className="projectSwitcher">
+            <span className="projectIcon">D</span>
+            <strong>Default project <span>/ production</span></strong>
           </div>
-          {view === "traces" && <div className="topbarActions">
-            <DurationControl value={timeRange} onChange={setTimeRange} />
-            <button className="refreshButton" onClick={load} aria-label="Refresh data">
-              <RefreshCw size={16} />
-              <span>{loading ? "Syncing" : "Refresh"}</span>
+          <nav className="viewTabs" aria-label="Console views">
+            <button className={view === "traces" ? "active" : ""} type="button" onClick={() => setView("traces")}>
+              <ListTree size={15} /><span>Requests</span>
             </button>
-          </div>}
-        </header>
+            <button className={view === "credentials" ? "active" : ""} type="button" onClick={() => setView("credentials")}>
+              <KeyRound size={15} /><span>Providers</span>
+            </button>
+            <button className={view === "tests" ? "active" : ""} type="button" onClick={() => setView("tests")}>
+              <FlaskConical size={15} /><span>Tests</span>
+            </button>
+          </nav>
+        </div>
+        <div className="topbarUtility">
+          {view === "traces" && (
+            <>
+              <span className={`liveIndicator ${timeMode === "between" ? "fixed" : ""}`}>
+                <span /> {timeMode === "between" ? "Fixed" : "Live"} · {rangeLabel}
+              </span>
+              <button className="refreshCommand" type="button" onClick={load} aria-label="Refresh data" title="Refresh data">
+                <RefreshCw className={loading ? "spinning" : ""} size={15} />
+                <span>Refresh</span>
+              </button>
+            </>
+          )}
+        </div>
+      </header>
+
+      <section className="content">
+        <div className="pageHeading">
+          <div>
+            <h1>{view === "traces" ? "Requests" : view === "credentials" ? "Provider credentials" : "Test approvals"}</h1>
+            <p>
+              {view === "traces"
+                ? `${summary?.total_requests ?? 0} requests · ${failureCount} failures · ${rangeLabel}`
+                : view === "credentials"
+                  ? "Manage write-only provider credentials."
+                  : "Review provider comparison runs before they spend."}
+            </p>
+          </div>
+        </div>
 
         {view === "traces" && (
           <>
-            {error && <div className="banner">{error}</div>}
+            <section className="queryPanel" aria-label="Request filters">
+              <div className="queryPrimary">
+                <label className="search">
+                  <Search size={16} />
+                  <input
+                    id="requestSearch"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="Search trace, tenant, route, model, request ID…"
+                    aria-label="Search requests"
+                  />
+                  <kbd>/</kbd>
+                </label>
+                <TimeRangeControl
+                  mode={timeMode}
+                  onModeChange={setTimeMode}
+                  relativeRange={timeRange}
+                  onRelativeChange={setTimeRange}
+                  absoluteRange={absoluteRange}
+                  onAbsoluteChange={setAbsoluteRange}
+                />
+              </div>
+              <div className="filterBar">
+                <SelectFilter label="Provider" value={filters.provider} options={facets.providers || []} onChange={(value) => setFilter("provider", value)} />
+                <SelectFilter label="Model" value={filters.model} options={facets.models || []} onChange={(value) => setFilter("model", value)} />
+                <SelectFilter label="Status" value={filters.status} options={facets.statuses || []} onChange={(value) => setFilter("status", value)} />
+                <SelectFilter label="Environment" value={filters.environment} options={facets.environments || []} onChange={(value) => setFilter("environment", value)} />
+                <SelectFilter label="Service" value={filters.service_name} options={facets.service_names || []} onChange={(value) => setFilter("service_name", value)} />
+                <SelectFilter label="Route" value={filters.route} options={facets.routes || []} onChange={(value) => setFilter("route", value)} />
+                <SelectFilter label="Tenant" value={filters.tenant_id} options={facets.tenant_ids || []} onChange={(value) => setFilter("tenant_id", value)} />
+              </div>
+              <div className="activeFilters">
+                <span className="scopeReadout"><Clock3 size={12} /><strong>time:</strong> {scopeRangeLabel}</span>
+                <span className="scopeReadout"><strong>model:</strong> {filters.model || "all"}</span>
+                <span className="scopeReadout"><strong>status:</strong> {filters.status || "all"}</span>
+                {activeChips.map((chip) => (
+                  <span className="filterChip" key={chip.key}>
+                    <span>{chip.label}:</span> {chip.value}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${chip.label} filter`}
+                      onClick={() => chip.key === "query" ? setQuery("") : setFilter(chip.key, "")}
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+                {activeFilterCount > 0 && (
+                  <button className="clearFilters" type="button" onClick={resetFilters}>Clear filters</button>
+                )}
+              </div>
+            </section>
 
             <section className="metricsGrid">
-              <MetricCard icon={Activity} label="Requests" value={summary?.total_requests ?? 0} detail={rangeLabel} />
-              <MetricCard icon={Coins} label="Spend" value={formatMoney(summary?.total_cost_usd)} detail={`${rangeLabel} estimated cost`} />
-              <MetricCard icon={Clock3} label="Latency" value={`${Math.round(summary?.avg_latency_ms || 0)} ms`} detail={`${rangeLabel} average`} />
+              <MetricCard icon={Activity} label="Requests" value={(summary?.total_requests ?? 0).toLocaleString()} detail={`${rangeLabel} · current scope`} />
+              <MetricCard icon={Coins} label="Total cost" value={formatMoney(summary?.total_cost_usd)} detail="Estimated from captured usage" />
+              <MetricCard icon={Zap} label="Average latency" value={`${Math.round(summary?.avg_latency_ms || 0).toLocaleString()} ms`} detail="End-to-end model call" />
               <MetricCard
                 icon={AlertTriangle}
                 label="Error rate"
                 value={`${Math.round((summary?.error_rate || 0) * 100)}%`}
-                detail={`${rangeLabel} failures`}
+                detail={`${Math.round((summary?.error_rate || 0) * (summary?.total_requests || 0))} failed requests`}
                 tone={summary?.error_rate ? "warning" : ""}
               />
+              <MetricCard icon={Database} label="Total tokens" value={compactNumber(summary?.total_tokens)} detail="Input and output combined" />
             </section>
 
             <section className="workspace">
-          <div className="requestPanel">
-            <div className="panelHeader">
-              <div>
-                <h2>Request stream</h2>
-                <p>
-                  {filtered.length} traces shown, {rangeLabel.toLowerCase()}
-                </p>
-              </div>
-              <label className="search">
-                <Search size={15} />
-                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search trace, provider ID, tenant, route, model, prompt" />
-              </label>
-            </div>
-
-            <div className="filterBar">
-              <div className="filterSummary" title="Filters apply to metrics, facets, and request rows">
-                <SlidersHorizontal size={15} />
-                <div>
-                  <strong>{activeFilterCount ? `${activeFilterCount} active` : "All traces"}</strong>
-                  <span>Dashboard scope</span>
+              <div className="requestPanel">
+                <div className="panelHeader">
+                  <div>
+                    <h2>Request stream</h2>
+                    <p>{loading ? "Refreshing requests…" : `Filtered to ${filtered.length} request${filtered.length === 1 ? "" : "s"}`}</p>
+                  </div>
+                  <span className="resultLimit">Newest 100</span>
+                </div>
+                <div className="tableScroll">
+                  <table className="requestTable">
+                    <thead>
+                      <tr>
+                        <th>Status</th>
+                        <th>Time</th>
+                        <th>Provider / model</th>
+                        <th>Route / service</th>
+                        <th>Tenant</th>
+                        <th className="numericCell">Latency</th>
+                        <th className="numericCell">Cost</th>
+                        <th className="numericCell">Tokens</th>
+                        <th>Trace ID</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered.map((request) => (
+                        <RequestRow key={request.id} request={request} selected={selected?.id === request.id} onSelect={setSelected} />
+                      ))}
+                    </tbody>
+                  </table>
+                  {loading && !filtered.length && (
+                    <div className="tableState loadingState" aria-live="polite">
+                      {[0, 1, 2, 3, 4].map((item) => <span className="skeletonRow" key={item} />)}
+                    </div>
+                  )}
+                  {!loading && error && !filtered.length && (
+                    <div className="tableState">
+                      <div className="stateIcon error"><AlertTriangle size={18} /></div>
+                      <h3>Couldn’t load requests</h3>
+                      <p>{error}. Check the API connection and try again.</p>
+                      <button className="retryButton" type="button" onClick={load}><RefreshCw size={14} /> Retry</button>
+                    </div>
+                  )}
+                  {!loading && !error && !filtered.length && (
+                    <div className="tableState">
+                      <div className="stateIcon"><Search size={18} /></div>
+                      <h3>No requests found</h3>
+                      <p>No LLM calls match this query in the selected time range.</p>
+                      <div className="stateActions">
+                        {activeFilterCount > 0 && <button className="retryButton" type="button" onClick={resetFilters}>Clear filters</button>}
+                        <button
+                          className="retryButton"
+                          type="button"
+                          onClick={() => {
+                            setTimeMode("relative");
+                            setTimeRange(DEFAULT_RANGE);
+                          }}
+                        >
+                          Last 24h
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
-              <SelectFilter label="Env" value={filters.environment} options={facets.environments || []} onChange={(value) => setFilter("environment", value)} />
-              <SelectFilter label="Service" value={filters.service_name} options={facets.service_names || []} onChange={(value) => setFilter("service_name", value)} />
-              <SelectFilter label="Tenant" value={filters.tenant_id} options={facets.tenant_ids || []} onChange={(value) => setFilter("tenant_id", value)} />
-              <SelectFilter label="Route" value={filters.route} options={facets.routes || []} onChange={(value) => setFilter("route", value)} />
-              <SelectFilter label="Model" value={filters.model} options={facets.models || []} onChange={(value) => setFilter("model", value)} />
-              <SelectFilter label="Status" value={filters.status} options={facets.statuses || []} onChange={(value) => setFilter("status", value)} />
-              <button className="clearFilters" type="button" onClick={resetFilters} disabled={!activeFilterCount && rangeMinutes === toMinutes(DEFAULT_RANGE)}>
-                <X size={14} />
-                <span>Reset</span>
-              </button>
-            </div>
-
-            <div className="requestHeader">
-              <span>Status</span>
-              <span>Service / Model</span>
-              <span>Route</span>
-              <span>Env</span>
-              <span>Tenant</span>
-              <span>Latency</span>
-              <span>Captured</span>
-            </div>
-            <div className="requestList">
-              {filtered.map((request) => (
-                <RequestRow key={request.id} request={request} selected={selected?.id === request.id} onSelect={setSelected} />
-              ))}
-              {!filtered.length && <div className="emptyList">No matching traces</div>}
-            </div>
-          </div>
-          <RequestDetail request={selected} />
+              <RequestDetail request={selected} />
             </section>
           </>
         )}

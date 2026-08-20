@@ -64,14 +64,35 @@ class _GeminiClient:
         self.interactions = _GeminiInteractions()
 
 
+class _CursorRun:
+    def wait(self) -> Any:
+        return SimpleNamespace(
+            id="cursor-run-123",
+            model=SimpleNamespace(id="composer-test"),
+            result="cursor response",
+            status="completed",
+            usage=SimpleNamespace(input_tokens=6, output_tokens=2, total_tokens=8),
+        )
+
+
+class _CursorClient:
+    def __init__(self) -> None:
+        self.model = SimpleNamespace(id="composer-test")
+
+    def send(self, *_: Any) -> _CursorRun:
+        return _CursorRun()
+
+
 def _llm() -> logllama.LLM:
     return logllama.LLM(
         openai=_OpenAIClient(),
         anthropic=_AnthropicClient(),
+        cursor=_CursorClient(),
         gemini=_GeminiClient(),
         models={
             "openai": "gpt-test",
             "anthropic": "claude-test",
+            "cursor": "composer-test",
             "gemini": "gemini-test",
         },
         routes={"fast": {"provider": "gemini", "model": "gemini-fast"}},
@@ -85,11 +106,14 @@ def test_generate_switches_providers_with_one_parameter() -> None:
     openai_response = llm.generate("hello", provider="openai")
     anthropic_response = llm.generate("hello", provider="claude")
     gemini_response = llm.generate("hello", provider="gemini")
+    cursor_response = llm.generate("hello", provider="cursor")
 
     assert openai_response.text == "openai response"
     assert anthropic_response.text == "anthropic response"
     assert anthropic_response.provider == "anthropic"
     assert gemini_response.usage.total_tokens == 9
+    assert cursor_response.text == "cursor response"
+    assert cursor_response.usage.total_tokens == 8
 
 
 def test_route_resolves_provider_and_model() -> None:

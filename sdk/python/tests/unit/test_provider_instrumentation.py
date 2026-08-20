@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 import logllama
+import logllama.cursor as logllama_cursor
 import logllama.provider_instrumentation as instrumentation
 
 
@@ -17,6 +18,8 @@ class _Messages:
     def create(self, **kwargs: Any) -> Any:
         self.received = kwargs
         return SimpleNamespace(
+            _request_id="anthropic-request-123",
+            retries_taken=1,
             model=kwargs["model"],
             content=[SimpleNamespace(type="text", text="ok")],
             usage=SimpleNamespace(input_tokens=2, output_tokens=1),
@@ -96,7 +99,11 @@ class _Interactions:
             id="gemini-interaction-123",
             model=kwargs["model"],
             output_text="ok",
-            usage=SimpleNamespace(input_tokens=2, output_tokens=1, total_tokens=3),
+            usage=SimpleNamespace(
+                total_input_tokens=2,
+                total_output_tokens=1,
+                total_tokens=3,
+            ),
         )
 
 
@@ -120,6 +127,28 @@ class _FailingGemini:
         self.models = _FailingModels()
 
 
+class _CursorRun:
+    def wait(self) -> Any:
+        return SimpleNamespace(
+            id="cursor-run-123",
+            model=SimpleNamespace(id="composer-test"),
+            result="cursor response",
+            status="completed",
+            usage=SimpleNamespace(input_tokens=7, output_tokens=3, total_tokens=10),
+        )
+
+
+class _Cursor:
+    def __init__(self) -> None:
+        self.model = SimpleNamespace(id="composer-default")
+        self.received: tuple[Any, ...] | None = None
+
+    def send(self, *args: Any, **kwargs: Any) -> _CursorRun:
+        self.received = args
+        assert not kwargs
+        return _CursorRun()
+
+
 def test_anthropic_wrapper_captures_and_removes_logllama_metadata(monkeypatch) -> None:
     events: list[dict[str, Any]] = []
     monkeypatch.setattr(instrumentation, "post_event_async", lambda _config, event: events.append(event))
@@ -141,6 +170,30 @@ def test_anthropic_wrapper_captures_and_removes_logllama_metadata(monkeypatch) -
     assert events[0]["provider"] == "anthropic"
     assert events[0]["tenant_id"] == "tenant-test"
     assert events[0]["usage"]["total_tokens"] == 3
+    assert events[0]["provider_request_id"] == "anthropic-request-123"
+    assert events[0]["retry_count"] == 1
+    assert events[0]["model_parameters"] == {"max_tokens": 10}
+
+
+def test_cursor_wrapper_captures_completed_run_and_removes_metadata(monkeypatch) -> None:
+    events: list[dict[str, Any]] = []
+    monkeypatch.setattr(logllama_cursor, "post_event_async", lambda _config, event: events.append(event))
+    client = logllama.wrap_cursor(_Cursor(), api_key="logllama-key", capture_otel=False)
+
+    result = client.send(
+        "hello",
+        {"model": "composer-test", "logllama_metadata": {"tenant_id": "tenant-test"}},
+    ).wait()
+
+    assert result.result == "cursor response"
+    assert client.received == ("hello", {"model": "composer-test"})
+    assert events[0]["provider"] == "cursor"
+    assert events[0]["operation"] == "agents.send"
+    assert events[0]["model"] == "composer-test"
+    assert events[0]["tenant_id"] == "tenant-test"
+    assert events[0]["provider_request_id"] == "cursor-run-123"
+    assert events[0]["usage"] == {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10}
+    assert events[0]["response"]["result"] == "cursor response"
 
 
 def test_gemini_wrapper_captures_usage_parameters_request_id_and_retries(monkeypatch) -> None:
@@ -195,6 +248,7 @@ def test_gemini_interactions_uses_response_id_as_provider_request_id(monkeypatch
     assert "logllama_metadata" not in client.interactions.received
     assert events[0]["operation"] == "interactions.create"
     assert events[0]["provider_request_id"] == "gemini-interaction-123"
+    assert events[0]["usage"] == {"input_tokens": 2, "output_tokens": 1, "total_tokens": 3}
 
 
 def test_gemini_async_wrapper_captures_explicit_application_retry(monkeypatch) -> None:

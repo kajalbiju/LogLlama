@@ -15,9 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .config import is_secure_privileged_key, settings
 from .database import Base, engine, get_session
 from .models import LLMRequest, Project, ProviderCredential, TestPlan
-from .pricing import estimate_cost_usd
+from .pricing import estimate_cost_usd, extract_response_usage
 from .schemas import (
     EventIn,
+    EventBatchIn,
+    EventBatchOut,
     MetadataFacetsOut,
     ProviderCredentialCreate,
     ProviderCredentialListOut,
@@ -74,6 +76,7 @@ async def lifespan(app: FastAPI):
             project.runtime_key = settings.default_runtime_key
         elif project.runtime_key and not is_secure_privileged_key(project.runtime_key):
             project.runtime_key = None
+        await repair_missing_cost_estimates(session)
         await session.commit()
 
     yield
@@ -204,6 +207,25 @@ async def ensure_metadata_columns(conn) -> None:
     ]
     for statement in statements:
         await conn.execute(text(statement))
+
+
+async def repair_missing_cost_estimates(session: AsyncSession) -> None:
+    result = await session.execute(
+        select(LLMRequest).where(
+            LLMRequest.status == "success",
+            LLMRequest.cost_usd == Decimal("0"),
+            LLMRequest.response.is_not(None),
+        )
+    )
+    for request in result.scalars():
+        input_tokens, output_tokens = extract_response_usage(request.response)
+        estimated_cost = estimate_cost_usd(request.model, input_tokens, output_tokens)
+        if estimated_cost == 0:
+            continue
+        request.input_tokens = input_tokens
+        request.output_tokens = output_tokens
+        request.total_tokens = request.total_tokens or input_tokens + output_tokens
+        request.cost_usd = estimated_cost
 
 
 @app.get("/health")
@@ -486,6 +508,46 @@ async def ingest_event(
     project: Project = Depends(project_from_api_key),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
+    accepted, duplicates = await store_events(session, project, [event])
+    return {"status": "accepted" if accepted else "duplicate_ignored"}
+
+
+@app.post(
+    "/v1/events/batch",
+    response_model=EventBatchOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def ingest_event_batch(
+    payload: EventBatchIn,
+    project: Project = Depends(project_from_api_key),
+    session: AsyncSession = Depends(get_session),
+) -> EventBatchOut:
+    accepted, duplicates = await store_events(session, project, payload.events)
+    return EventBatchOut(accepted=accepted, duplicates=duplicates)
+
+
+async def store_events(
+    session: AsyncSession,
+    project: Project,
+    events: list[EventIn],
+) -> tuple[int, int]:
+    accepted = 0
+    duplicates = 0
+    for event in events:
+        request = request_from_event(project, event)
+        try:
+            async with session.begin_nested():
+                session.add(request)
+                await session.flush()
+        except IntegrityError:
+            duplicates += 1
+        else:
+            accepted += 1
+    await session.commit()
+    return accepted, duplicates
+
+
+def request_from_event(project: Project, event: EventIn) -> LLMRequest:
     usage = event.usage
     total_tokens = usage.total_tokens or usage.input_tokens + usage.output_tokens
     cost_usd = event.cost_usd
@@ -493,7 +555,7 @@ async def ingest_event(
         cost_usd = estimate_cost_usd(event.model, usage.input_tokens, usage.output_tokens)
 
     normalized = normalize_event_metadata(event)
-    request = LLMRequest(
+    return LLMRequest(
         project_id=project.id,
         external_id=event.external_id,
         provider=event.provider,
@@ -533,19 +595,11 @@ async def ingest_event(
         captured_at=event.captured_at or datetime.now(timezone.utc),
     )
 
-    session.add(request)
-    try:
-        await session.commit()
-    except IntegrityError:
-        await session.rollback()
-        return {"status": "duplicate_ignored"}
-
-    return {"status": "accepted"}
-
 
 @app.get("/api/requests", response_model=RequestListOut)
 async def list_requests(
     status_filter: str | None = Query(default=None, alias="status"),
+    provider: str | None = None,
     model: str | None = None,
     service_name: str | None = None,
     environment: str | None = None,
@@ -561,19 +615,23 @@ async def list_requests(
     q: str | None = None,
     minutes: int | None = Query(default=None, ge=1, le=60 * 24 * 30),
     days: int | None = Query(default=None, ge=1, le=30),
+    start: datetime | None = None,
+    end: datetime | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
 ) -> RequestListOut:
     project = await default_project(session)
-    since = datetime.now(timezone.utc) - timedelta(minutes=resolve_window_minutes(minutes=minutes, days=days))
-    query: Select[tuple[LLMRequest]] = select(LLMRequest).where(
-        LLMRequest.project_id == project.id,
-        LLMRequest.captured_at >= since,
+    since, until, _ = resolve_time_bounds(minutes=minutes, days=days, start=start, end=end)
+    query: Select[tuple[LLMRequest]] = apply_time_bounds(
+        select(LLMRequest).where(LLMRequest.project_id == project.id),
+        since,
+        until,
     )
 
     query = apply_request_filters(
         query,
         status_filter=status_filter,
+        provider=provider,
         model=model,
         service_name=service_name,
         environment=environment,
@@ -598,7 +656,10 @@ async def list_requests(
 async def metadata_facets(
     minutes: int | None = Query(default=None, ge=1, le=60 * 24 * 30),
     days: int | None = Query(default=None, ge=1, le=30),
+    start: datetime | None = None,
+    end: datetime | None = None,
     status_filter: str | None = Query(default=None, alias="status"),
+    provider: str | None = None,
     model: str | None = None,
     service_name: str | None = None,
     environment: str | None = None,
@@ -615,9 +676,10 @@ async def metadata_facets(
     session: AsyncSession = Depends(get_session),
 ) -> MetadataFacetsOut:
     project = await default_project(session)
-    since = datetime.now(timezone.utc) - timedelta(minutes=resolve_window_minutes(minutes=minutes, days=days))
+    since, until, _ = resolve_time_bounds(minutes=minutes, days=days, start=start, end=end)
     filters = {
         "status_filter": status_filter,
+        "provider": provider,
         "model": model,
         "service_name": service_name,
         "environment": environment,
@@ -633,13 +695,14 @@ async def metadata_facets(
         "q": q,
     }
     return MetadataFacetsOut(
-        service_names=await distinct_values(session, project.id, LLMRequest.service_name, since, filters),
-        environments=await distinct_values(session, project.id, LLMRequest.environment, since, filters),
-        routes=await distinct_values(session, project.id, LLMRequest.route, since, filters),
-        tenant_ids=await distinct_values(session, project.id, LLMRequest.tenant_id, since, filters),
-        prompt_templates=await distinct_values(session, project.id, LLMRequest.prompt_template, since, filters),
-        models=await distinct_values(session, project.id, LLMRequest.model, since, filters),
-        statuses=await distinct_values(session, project.id, LLMRequest.status, since, filters),
+        providers=await distinct_values(session, project.id, LLMRequest.provider, since, until, filters),
+        service_names=await distinct_values(session, project.id, LLMRequest.service_name, since, until, filters),
+        environments=await distinct_values(session, project.id, LLMRequest.environment, since, until, filters),
+        routes=await distinct_values(session, project.id, LLMRequest.route, since, until, filters),
+        tenant_ids=await distinct_values(session, project.id, LLMRequest.tenant_id, since, until, filters),
+        prompt_templates=await distinct_values(session, project.id, LLMRequest.prompt_template, since, until, filters),
+        models=await distinct_values(session, project.id, LLMRequest.model, since, until, filters),
+        statuses=await distinct_values(session, project.id, LLMRequest.status, since, until, filters),
     )
 
 
@@ -681,7 +744,10 @@ async def get_request(request_id: UUID, session: AsyncSession = Depends(get_sess
 async def metrics_summary(
     minutes: int | None = Query(default=None, ge=1, le=60 * 24 * 30),
     hours: int | None = Query(default=None, ge=1, le=24 * 30),
+    start: datetime | None = None,
+    end: datetime | None = None,
     status_filter: str | None = Query(default=None, alias="status"),
+    provider: str | None = None,
     model: str | None = None,
     service_name: str | None = None,
     environment: str | None = None,
@@ -698,10 +764,20 @@ async def metrics_summary(
     session: AsyncSession = Depends(get_session),
 ) -> SummaryOut:
     project = await default_project(session)
-    since = datetime.now(timezone.utc) - timedelta(minutes=resolve_window_minutes(minutes=minutes, hours=hours))
+    since, until, window_minutes = resolve_time_bounds(
+        minutes=minutes,
+        hours=hours,
+        start=start,
+        end=end,
+    )
     base_query: Select[tuple[LLMRequest]] = apply_request_filters(
-        select(LLMRequest).where(LLMRequest.project_id == project.id, LLMRequest.captured_at >= since),
+        apply_time_bounds(
+            select(LLMRequest).where(LLMRequest.project_id == project.id),
+            since,
+            until,
+        ),
         status_filter=status_filter,
+        provider=provider,
         model=model,
         service_name=service_name,
         environment=environment,
@@ -727,7 +803,7 @@ async def metrics_summary(
     total_result = await session.execute(total_query)
     total_requests, total_cost, avg_latency, error_count, total_tokens = total_result.one()
 
-    bucket_name = "minute" if resolve_window_minutes(minutes=minutes, hours=hours) <= 60 else "hour"
+    bucket_name = "minute" if window_minutes <= 60 else "hour"
     bucket = func.date_trunc(bucket_name, base_query.c.captured_at).label("bucket")
     series_query = (
         select(
@@ -779,10 +855,51 @@ def resolve_window_minutes(
     return 24 * 60
 
 
+def resolve_time_bounds(
+    *,
+    minutes: int | None = None,
+    hours: int | None = None,
+    days: int | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> tuple[datetime, datetime | None, int]:
+    if (start is None) != (end is None):
+        raise HTTPException(status_code=422, detail="Both start and end are required for an exact time range.")
+
+    if start is not None and end is not None:
+        normalized_start = normalize_time_boundary(start)
+        normalized_end = normalize_time_boundary(end)
+        if normalized_start >= normalized_end:
+            raise HTTPException(status_code=422, detail="Start must be earlier than end.")
+        window_minutes = max(1, int((normalized_end - normalized_start).total_seconds() / 60))
+        return normalized_start, normalized_end, window_minutes
+
+    window_minutes = resolve_window_minutes(minutes=minutes, hours=hours, days=days)
+    return datetime.now(timezone.utc) - timedelta(minutes=window_minutes), None, window_minutes
+
+
+def normalize_time_boundary(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def apply_time_bounds(
+    query: Select[tuple[LLMRequest]],
+    since: datetime,
+    until: datetime | None = None,
+) -> Select[tuple[LLMRequest]]:
+    query = query.where(LLMRequest.captured_at >= since)
+    if until is not None:
+        query = query.where(LLMRequest.captured_at <= until)
+    return query
+
+
 def apply_request_filters(
     query: Select[tuple[LLMRequest]],
     *,
     status_filter: str | None = None,
+    provider: str | None = None,
     model: str | None = None,
     service_name: str | None = None,
     environment: str | None = None,
@@ -799,6 +916,8 @@ def apply_request_filters(
 ) -> Select[tuple[LLMRequest]]:
     if status_filter:
         query = query.where(LLMRequest.status == status_filter)
+    if provider:
+        query = query.where(LLMRequest.provider == provider)
     if model:
         query = query.where(LLMRequest.model == model)
 
@@ -880,11 +999,14 @@ async def distinct_values(
     project_id: UUID,
     column,
     since: datetime | None = None,
+    until: datetime | None = None,
     filters: dict[str, str | None] | None = None,
 ) -> list[str]:
     query = select(column).where(LLMRequest.project_id == project_id, column.is_not(None))
     if since is not None:
         query = query.where(LLMRequest.captured_at >= since)
+    if until is not None:
+        query = query.where(LLMRequest.captured_at <= until)
     if filters:
         query = apply_request_filters(query, **filters)
     result = await session.execute(

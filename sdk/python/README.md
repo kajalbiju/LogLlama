@@ -16,11 +16,17 @@ client = logllama.wrap_openai(OpenAI())
 
 Every supported OpenAI call made through `client` is captured automatically.
 
-Anthropic and Gemini native clients use the same pattern:
+Anthropic, Gemini, and Cursor SDK clients use the same pattern:
 
 ```python
+from cursor_sdk import Agent, LocalAgentOptions
+
 anthropic_client = logllama.wrap_anthropic(Anthropic())
 gemini_client = logllama.wrap_gemini(genai.Client())
+# A Cursor run is captured when .wait() or .text() returns its terminal result.
+cursor_agent = logllama.wrap_cursor(
+    Agent.create(model="auto-smart", local=LocalAgentOptions(cwd="."))
+)
 ```
 
 ## Provider Switching
@@ -31,10 +37,12 @@ Use the normalized client when the provider should be selected per request:
 llm = logllama.LLM(
     openai=openai_client,
     anthropic=anthropic_client,
+    cursor=cursor_agent,
     gemini=gemini_client,
     models={
         "openai": "gpt-model",
         "anthropic": "claude-model",
+        "cursor": "auto-smart",
         "gemini": "gemini-model",
     },
 )
@@ -56,6 +64,7 @@ Provider packages are optional:
 pip install "logllama[openai]"
 pip install "logllama[anthropic]"
 pip install "logllama[gemini]"
+pip install "logllama[cursor]"
 pip install "logllama[all]"
 ```
 
@@ -75,6 +84,7 @@ plan = llm.request_test(
     targets=[
         ("openai", "gpt-model"),
         ("anthropic", "claude-model"),
+        ("cursor", "auto-smart"),
         ("gemini", "gemini-model"),
     ],
     max_output_tokens=16,
@@ -96,6 +106,7 @@ llm = logllama.LLM.from_managed(
     models={
         "openai": "gpt-model",
         "anthropic": "claude-model",
+        "cursor": "auto-smart",
         "gemini": "gemini-model",
     },
     endpoint="http://localhost:8000",
@@ -236,6 +247,42 @@ LOGLLAMA_SAMPLE_RATE=1
 
 Errors are captured by default even when successful requests are sampled.
 
+## Reliable Delivery
+
+The SDK uses one bounded background queue per LogLlama destination and sends
+events in batches. Provider calls only pay the cost of adding an event to the
+local queue; telemetry HTTP retries happen on the delivery worker.
+
+```python
+import logllama
+
+logllama.init(
+    delivery_queue_size=1000,
+    delivery_batch_size=20,
+    delivery_flush_interval_seconds=0.25,
+    delivery_max_attempts=3,
+    delivery_retry_backoff_seconds=0.25,
+    delivery_spool_path="/var/lib/my-service/logllama-events.jsonl",
+)
+```
+
+The spool is optional because it contains captured event payloads. When set,
+failed deliveries and queue overflow are written with file mode `0600` and
+replayed before new in-memory events. Without a spool, a full queue or exhausted
+delivery retries emits a `RuntimeWarning` and increments `delivery_stats()["dropped"]`.
+
+Call `logllama.flush()` during graceful application shutdown. `LLM.close()`
+flushes automatically.
+
+```text
+LOGLLAMA_DELIVERY_QUEUE_SIZE=1000
+LOGLLAMA_DELIVERY_BATCH_SIZE=20
+LOGLLAMA_DELIVERY_FLUSH_INTERVAL_SECONDS=0.25
+LOGLLAMA_DELIVERY_MAX_ATTEMPTS=3
+LOGLLAMA_DELIVERY_RETRY_BACKOFF_SECONDS=0.25
+LOGLLAMA_DELIVERY_SPOOL_PATH=/var/lib/my-service/logllama-events.jsonl
+```
+
 ## FastAPI Helper
 
 ```python
@@ -258,24 +305,27 @@ Install the SDK test dependencies:
 
 ```bash
 cd sdk/python
-python -m pip install -e ".[test]"
+python -m pip install -e ".[openai,anthropic,gemini,cursor,test]"
 ```
 
 Run normal SDK tests:
 
 ```bash
-python -m pytest
+python -m pytest tests/unit -q
 ```
 
-Run the environment-dependent OpenAI integration tests:
+Run paid integration tests through the repository's manual `provider-e2e`
+GitHub Actions job. It boots OpenBao, saves OpenAI, Anthropic, Gemini, and
+Cursor keys through the admin Providers API, removes provider API keys from the
+SDK process, and runs five bounded calls per provider through
+`LLM.from_managed(...)`. Cursor runs locally with tools disabled.
 
-```bash
-RUN_LOGLLAMA_OPENAI_INTEGRATION=1 \
-OPENAI_API_KEY=sk-... \
-python -m pytest tests/integration -m integration
-```
-
-The valid-key scenario makes exactly one billable OpenAI Responses API request with `max_output_tokens=20`. The wrong-key scenario uses an intentionally invalid OpenAI key to verify error capture.
+Configure the `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, and
+`CURSOR_API_KEY` secrets for the
+`provider-e2e` GitHub environment. Then open **Actions > SDK Tests > Run
+workflow** and set `run_provider_e2e` to `true`. Keep both local
+`RUN_LOGLLAMA_*_INTEGRATION` flags at `0` during ordinary test runs to avoid
+accidental provider charges.
 
 ## Local Development
 

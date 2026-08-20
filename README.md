@@ -98,21 +98,39 @@ scripts/        Local sample event senders
 
 ## Local Setup
 
-1. Start PostgreSQL:
+1. Create the ignored local environment file and generate separate privileged keys:
 
 ```bash
-PATH=/Applications/Docker.app/Contents/Resources/bin:$PATH /Applications/Docker.app/Contents/Resources/bin/docker compose up -d postgres
+test -f .env || cp .env.example .env
+admin_key="$(openssl rand -hex 32)"
+runtime_key="$(openssl rand -hex 32)"
+printf '\nLOGLLAMA_ADMIN_API_KEY=%s\n' "$admin_key" >> .env
+printf 'LOGLLAMA_DEFAULT_RUNTIME_KEY=%s\n' "$runtime_key" >> .env
+printf 'LOGLLAMA_RUNTIME_KEY=%s\n' "$runtime_key" >> .env
+unset admin_key runtime_key
 ```
 
-If `docker` is already on your PATH, this also works:
+Privileged keys must be random and at least 32 characters. Runtime keys must not
+exceed 255 characters. The known `llama-admin-key` and `llama-runtime-key`
+values are intentionally rejected.
+
+2. Start PostgreSQL and bootstrap persistent local OpenBao:
 
 ```bash
 docker compose up -d postgres
+scripts/openbao-local-bootstrap.sh
 ```
 
-2. Start the backend:
+The bootstrap script initializes or unseals OpenBao and writes ignored AppRole
+configuration to `.openbao/backend.env`.
+
+3. Start the backend with both environment files loaded:
 
 ```bash
+set -a
+source .env
+source .openbao/backend.env
+set +a
 cd backend
 python -m venv .venv
 source .venv/bin/activate
@@ -132,7 +150,7 @@ The backend seeds a default project with this SDK key:
 llama-dev-key
 ```
 
-3. Start the dashboard:
+4. Start the dashboard:
 
 ```bash
 cd dashboard
@@ -148,7 +166,7 @@ http://127.0.0.1:5173
 
 If that port is occupied, Vite may use `5174`.
 
-4. Send a sample captured request without an OpenAI key:
+5. Send a sample captured request without a provider key:
 
 ```bash
 python3 scripts/send_sample_event.py
@@ -162,17 +180,20 @@ Backend:
 ```text
 DATABASE_URL=postgresql+asyncpg://logllama:logllama@localhost:5432/logllama
 LOGLLAMA_DEFAULT_API_KEY=llama-dev-key
-LOGLLAMA_DEFAULT_RUNTIME_KEY=llama-runtime-key
+LOGLLAMA_DEFAULT_RUNTIME_KEY=<32-to-255-character-random-key>
 LOGLLAMA_DEFAULT_PROJECT_NAME=Development
-LOGLLAMA_ADMIN_API_KEY=llama-admin-key
-LOGLLAMA_SECRET_BACKEND=memory
+LOGLLAMA_ADMIN_API_KEY=<32+-character-random-key>
+LOGLLAMA_SECRET_BACKEND=openbao
+LOGLLAMA_SECRET_STORE_ADDR=http://127.0.0.1:8200
+LOGLLAMA_SECRET_STORE_ROLE_ID_FILE=/absolute/path/to/.openbao/role-id
+LOGLLAMA_SECRET_STORE_SECRET_ID_FILE=/absolute/path/to/.openbao/secret-id
 ```
 
 SDK:
 
 ```text
 LOGLLAMA_API_KEY=llama-dev-key
-LOGLLAMA_RUNTIME_KEY=llama-runtime-key
+LOGLLAMA_RUNTIME_KEY=<same-value-as-LOGLLAMA_DEFAULT_RUNTIME_KEY>
 LOGLLAMA_ENDPOINT=http://localhost:8000
 LOGLLAMA_TIMEOUT_SECONDS=1
 LOGLLAMA_CAPTURE_PROMPTS=true
@@ -193,19 +214,26 @@ LOGLLAMA_CAPTURE_OTEL=true
 LOGLLAMA_ENABLED=true
 ```
 
-`LOGLLAMA_SECRET_BACKEND=memory` is development-only and loses managed keys when the backend restarts. Production choices are `aws`, `vault`, and `openbao`; the backend stores only secret references and fingerprints in PostgreSQL.
+`scripts/openbao-local-bootstrap.sh` is the recommended local setup. It uses
+persistent Raft storage and AppRole files, so provider credentials survive
+backend and OpenBao restarts. The backend stores only secret references and
+fingerprints in PostgreSQL.
 
-Vault and OpenBao share the same KV v2 configuration:
+Memory storage is available only for disposable development and must be
+explicitly enabled:
 
 ```text
-LOGLLAMA_SECRET_BACKEND=openbao
-LOGLLAMA_SECRET_STORE_ADDR=http://127.0.0.1:8200
-LOGLLAMA_SECRET_STORE_TOKEN=replace-me
-LOGLLAMA_SECRET_STORE_MOUNT=secret
-LOGLLAMA_SECRET_STORE_TIMEOUT_SECONDS=2
+LOGLLAMA_SECRET_BACKEND=memory
+LOGLLAMA_ALLOW_EPHEMERAL_SECRETS=true
 ```
 
-The token should be injected into the backend process by the deployment environment, not stored in the admin portal. Managed provider credentials are fetched with the separate runtime key during SDK startup and refreshed in the background, never during a normal model call. This keeps secret-manager network latency out of customer model requests.
+Do not use memory storage for credentials that must survive a restart.
+Production choices are `aws`, `vault`, and `openbao`. Static Vault/OpenBao
+tokens remain supported, but AppRole or workload identity should be injected
+into the backend instead of being stored in the admin portal. Managed provider
+credentials are fetched with the separate runtime key during SDK startup and
+refreshed in the background, never during a normal model call. This keeps
+secret-manager network latency out of customer model requests.
 Non-loopback Vault and OpenBao endpoints must use HTTPS.
 
 Benchmark local secret-store control-plane latency with:
@@ -223,7 +251,7 @@ Measure the full SDK preload endpoint separately:
 cd backend
 PYTHONPATH=. .venv/bin/python benchmarks/runtime_preload_latency.py \
   --endpoint http://127.0.0.1:8000 \
-  --runtime-key llama-runtime-key
+  --runtime-key "$LOGLLAMA_RUNTIME_KEY"
 ```
 
 ## API
@@ -245,23 +273,47 @@ PYTHONPATH=. .venv/bin/python benchmarks/runtime_preload_latency.py \
 
 ## SDK Integration Tests
 
-The SDK includes opt-in OpenAI integration tests under `sdk/python/tests/integration`.
+The SDK includes opt-in OpenAI and Gemini integration tests under
+`sdk/python/tests/integration`.
 
 ```bash
 cd sdk/python
-python -m pip install -e ".[test]"
-python -m pytest
+python -m pip install -e ".[openai,gemini,test]"
+python -m pytest tests/unit -q
 ```
 
-Run the real OpenAI scenarios only when credentials are available:
+The recommended paid E2E path is the manual `provider-e2e` job in
+`.github/workflows/sdk-tests.yml`. Configure the `OPENAI_API_KEY` and
+`GEMINI_API_KEY` GitHub secrets, open **Actions > SDK Tests > Run workflow**,
+and set `run_provider_e2e` to `true`. The job:
+
+- boots PostgreSQL and OpenBao;
+- generates strong admin and runtime keys;
+- saves both provider keys through the admin Providers API;
+- removes provider API keys from the SDK test environment; and
+- runs exactly five OpenAI and five Gemini requests through
+  `LLM.from_managed(...)`.
+
+For a local paid run, first complete the OpenBao setup above, save provider
+keys in the dashboard Providers tab, and leave the backend running. Then load
+the root `.env`, explicitly opt in, and select only the bounded success tests:
 
 ```bash
+set -a
+source ../../.env
+set +a
+unset OPENAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY ANTHROPIC_API_KEY
 RUN_LOGLLAMA_OPENAI_INTEGRATION=1 \
-OPENAI_API_KEY=sk-... \
-python -m pytest tests/integration -m integration
+LOGLLAMA_OPENAI_SUCCESS_RUNS=5 \
+RUN_LOGLLAMA_GEMINI_INTEGRATION=1 \
+LOGLLAMA_GEMINI_SUCCESS_RUNS=5 \
+python -m pytest -q \
+  tests/integration/test_openai_capture.py::test_valid_openai_managed_credentials_capture_bounded_billable_calls \
+  tests/integration/test_gemini_capture.py::test_valid_gemini_managed_credentials_capture_bounded_calls
 ```
 
-The valid-key test makes exactly one billable OpenAI request. The wrong-key test uses an intentionally invalid OpenAI key to validate SDK error capture.
+Keep both `RUN_LOGLLAMA_*_INTEGRATION` values at `0` during ordinary local
+test runs to avoid accidental provider charges.
 
 ## Packaging Status
 

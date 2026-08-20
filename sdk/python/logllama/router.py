@@ -10,11 +10,13 @@ from typing import Any, Callable
 from urllib import error, request
 
 from .anthropic import wrap_anthropic
+from .client import flush
 from .config import get_config
 from .credentials import ManagedCredentialCache
+from .cursor import wrap_cursor
 from .gemini import wrap_gemini
 from .openai import wrap_openai
-from .providers import AnthropicAdapter, GenerationResponse, GeminiAdapter, OpenAIAdapter, ProviderAdapter
+from .providers import AnthropicAdapter, CursorAdapter, GenerationResponse, GeminiAdapter, OpenAIAdapter, ProviderAdapter
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +97,7 @@ class LLM:
         providers: dict[str, ProviderAdapter | Any] | None = None,
         openai: Any = None,
         anthropic: Any = None,
+        cursor: Any = None,
         gemini: Any = None,
         models: dict[str, str] | None = None,
         routes: dict[str, dict[str, str]] | None = None,
@@ -107,6 +110,8 @@ class LLM:
             clients["openai"] = openai
         if anthropic is not None:
             clients["anthropic"] = anthropic
+        if cursor is not None:
+            clients["cursor"] = cursor
         if gemini is not None:
             clients["gemini"] = gemini
 
@@ -134,6 +139,7 @@ class LLM:
         credentials = {
             "openai": os.getenv("OPENAI_API_KEY"),
             "anthropic": os.getenv("ANTHROPIC_API_KEY"),
+            "cursor": os.getenv("CURSOR_API_KEY"),
             "gemini": os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"),
         }
         clients = {
@@ -177,9 +183,10 @@ class LLM:
         cache.start_background_refresh(llm._refresh_managed_providers)
         return llm
 
-    def close(self) -> None:
+    def close(self, timeout_seconds: float = 5.0) -> None:
         if self._credential_cache:
             self._credential_cache.close()
+        flush(timeout_seconds)
 
     def available_providers(self) -> tuple[str, ...]:
         return tuple(sorted(self._providers))
@@ -310,12 +317,14 @@ class LLM:
             wrappers = {
                 "openai": wrap_openai,
                 "anthropic": wrap_anthropic,
+                "cursor": wrap_cursor,
                 "gemini": wrap_gemini,
             }
             client = wrappers[normalized](client, **self._instrumentation)
         adapters = {
             "openai": OpenAIAdapter,
             "anthropic": AnthropicAdapter,
+            "cursor": CursorAdapter,
             "gemini": GeminiAdapter,
         }
         if normalized not in adapters:
@@ -352,6 +361,18 @@ def _default_provider_factories() -> dict[str, Callable[[str], Any]]:
         from google import genai
 
         factories["gemini"] = lambda api_key: genai.Client(api_key=api_key)
+    except ImportError:
+        pass
+    try:
+        from cursor_sdk import Agent, AgentOptions, LocalAgentOptions
+
+        factories["cursor"] = lambda api_key: Agent.create(
+            AgentOptions(
+                model=os.getenv("CURSOR_MODEL", "auto-smart"),
+                api_key=api_key,
+                local=LocalAgentOptions(cwd=os.getenv("CURSOR_SDK_WORKSPACE", os.getcwd())),
+            )
+        )
     except ImportError:
         pass
     return factories

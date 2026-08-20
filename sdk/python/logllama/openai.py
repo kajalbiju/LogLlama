@@ -92,6 +92,12 @@ def instrument_openai(
     sample_rate: float | None = None,
     capture_errors: bool | None = None,
     capture_otel: bool | None = None,
+    delivery_queue_size: int | None = None,
+    delivery_batch_size: int | None = None,
+    delivery_flush_interval_seconds: float | None = None,
+    delivery_max_attempts: int | None = None,
+    delivery_retry_backoff_seconds: float | None = None,
+    delivery_spool_path: str | None = None,
     enabled: bool | None = None,
 ) -> Any:
     config = get_config(
@@ -114,6 +120,12 @@ def instrument_openai(
         sample_rate=sample_rate,
         capture_errors=capture_errors,
         capture_otel=capture_otel,
+        delivery_queue_size=delivery_queue_size,
+        delivery_batch_size=delivery_batch_size,
+        delivery_flush_interval_seconds=delivery_flush_interval_seconds,
+        delivery_max_attempts=delivery_max_attempts,
+        delivery_retry_backoff_seconds=delivery_retry_backoff_seconds,
+        delivery_spool_path=delivery_spool_path,
         enabled=enabled,
     )
 
@@ -521,9 +533,19 @@ def _extract_usage(response: Any) -> dict[str, int]:
     if usage is None and isinstance(response, dict):
         usage = response.get("usage") or response.get("usage_metadata")
 
-    input_tokens = _get_usage_value(usage, "prompt_tokens", "input_tokens", "prompt_token_count")
+    input_tokens = _get_usage_value(
+        usage,
+        "prompt_tokens",
+        "input_tokens",
+        "prompt_token_count",
+        "total_input_tokens",
+    )
     output_tokens = _get_usage_value(
-        usage, "completion_tokens", "output_tokens", "candidates_token_count"
+        usage,
+        "completion_tokens",
+        "output_tokens",
+        "candidates_token_count",
+        "total_output_tokens",
     )
     total_tokens = _get_usage_value(usage, "total_tokens", "total_token_count")
     if not total_tokens:

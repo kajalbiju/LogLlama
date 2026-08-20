@@ -53,6 +53,15 @@ class EventIn(BaseModel):
     captured_at: datetime | None = None
 
 
+class EventBatchIn(BaseModel):
+    events: list[EventIn] = Field(min_length=1, max_length=100)
+
+
+class EventBatchOut(BaseModel):
+    accepted: int
+    duplicates: int
+
+
 class RequestOut(BaseModel):
     id: UUID
     external_id: str | None
@@ -100,6 +109,7 @@ class RequestListOut(BaseModel):
 
 
 class MetadataFacetsOut(BaseModel):
+    providers: list[str]
     service_names: list[str]
     environments: list[str]
     routes: list[str]
@@ -127,7 +137,7 @@ class SummaryOut(BaseModel):
 
 
 class ProviderCredentialCreate(BaseModel):
-    provider: str = Field(pattern="^(openai|anthropic|gemini)$")
+    provider: str = Field(pattern="^(openai|anthropic|gemini|cursor)$")
     api_key: str = Field(min_length=8, max_length=1000)
     name: str = Field(default="default", min_length=1, max_length=120)
 
@@ -162,7 +172,7 @@ class RuntimeCredentialListOut(BaseModel):
 
 
 class TestTarget(BaseModel):
-    provider: str = Field(pattern="^(openai|anthropic|gemini|claude)$")
+    provider: str = Field(pattern="^(openai|anthropic|gemini|cursor|claude)$")
     model: str = Field(min_length=1, max_length=160)
 
 

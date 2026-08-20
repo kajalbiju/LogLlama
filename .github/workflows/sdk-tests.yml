@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       run_provider_e2e:
-        description: Run 5 real OpenAI and 5 real Gemini calls through Provider-tab credentials
+        description: Run five bounded calls for OpenAI, Anthropic, Gemini, and Cursor credentials
         required: false
         default: "false"
         type: choice
@@ -59,17 +59,19 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install SDK provider and test dependencies
-        run: python -m pip install -e ".[openai,gemini,test]"
+        run: python -m pip install -e ".[openai,anthropic,gemini,cursor,test]"
       - name: Install backend dependencies
         working-directory: backend
         run: python -m pip install -r requirements.txt
       - name: Require provider secrets
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
         run: |
-          test -n "$OPENAI_API_KEY" && test -n "$GEMINI_API_KEY" || {
-            echo "OPENAI_API_KEY and GEMINI_API_KEY secrets are required."
+          test -n "$OPENAI_API_KEY" && test -n "$ANTHROPIC_API_KEY" && test -n "$GEMINI_API_KEY" && test -n "$CURSOR_API_KEY" || {
+            echo "OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, and CURSOR_API_KEY secrets are required."
             exit 1
           }
       - name: Generate CI admin and runtime keys
@@ -105,12 +107,18 @@ jobs:
       - name: Seed Provider-tab credentials
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
         working-directory: .
         run: |
-          for provider in openai gemini; do
+          for provider in openai anthropic gemini cursor; do
             if [ "$provider" = openai ]; then
               api_key="$OPENAI_API_KEY"
+            elif [ "$provider" = anthropic ]; then
+              api_key="$ANTHROPIC_API_KEY"
+            elif [ "$provider" = cursor ]; then
+              api_key="$CURSOR_API_KEY"
             else
               api_key="$GEMINI_API_KEY"
             fi
@@ -125,7 +133,7 @@ jobs:
                 http://127.0.0.1:8000/api/admin/provider-credentials \
                 >/dev/null
           done
-          unset OPENAI_API_KEY GEMINI_API_KEY api_key
+          unset OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY CURSOR_API_KEY api_key
       - name: Verify OpenBao-backed runtime credentials
         working-directory: .
         run: |
@@ -136,26 +144,36 @@ jobs:
           )"
           jq -e '
             ([.credentials[].provider] | index("openai") != null) and
+            ([.credentials[].provider] | index("anthropic") != null) and
             ([.credentials[].provider] | index("gemini") != null) and
+            ([.credentials[].provider] | index("cursor") != null) and
             (all(.credentials[]; (.api_key | length) > 0))
           ' <<<"$response" >/dev/null
-          echo "OpenAI and Gemini credentials loaded from OpenBao."
+          echo "OpenAI, Anthropic, Gemini, and Cursor credentials loaded from OpenBao."
           unset response
-      - name: Run 5 OpenAI and 5 Gemini Provider-tab calls
+      - name: Run five calls for each Provider-tab credential
         env:
           RUN_LOGLLAMA_OPENAI_INTEGRATION: "1"
           LOGLLAMA_OPENAI_SUCCESS_RUNS: "5"
+          RUN_LOGLLAMA_ANTHROPIC_INTEGRATION: "1"
+          LOGLLAMA_ANTHROPIC_SUCCESS_RUNS: "5"
           RUN_LOGLLAMA_GEMINI_INTEGRATION: "1"
           LOGLLAMA_GEMINI_SUCCESS_RUNS: "5"
+          RUN_LOGLLAMA_CURSOR_INTEGRATION: "1"
+          LOGLLAMA_CURSOR_SUCCESS_RUNS: "5"
           LOGLLAMA_API_KEY: llama-dev-key
           LOGLLAMA_ENDPOINT: http://127.0.0.1:8000
           LOGLLAMA_OPENAI_TEST_MODEL: ${{ vars.LOGLLAMA_OPENAI_TEST_MODEL || 'gpt-5-nano' }}
+          LOGLLAMA_ANTHROPIC_TEST_MODEL: ${{ vars.LOGLLAMA_ANTHROPIC_TEST_MODEL || 'claude-sonnet-4-20250514' }}
           LOGLLAMA_GEMINI_TEST_MODEL: ${{ vars.LOGLLAMA_GEMINI_TEST_MODEL || 'gemini-3.5-flash-lite' }}
+          LOGLLAMA_CURSOR_TEST_MODEL: ${{ vars.LOGLLAMA_CURSOR_TEST_MODEL || 'auto-smart' }}
         run: |
-          unset OPENAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY ANTHROPIC_API_KEY
+          unset OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY GOOGLE_API_KEY CURSOR_API_KEY
           python -m pytest -q --durations=2 \
             tests/integration/test_openai_capture.py::test_valid_openai_managed_credentials_capture_bounded_billable_calls \
-            tests/integration/test_gemini_capture.py::test_valid_gemini_managed_credentials_capture_bounded_calls
+            tests/integration/test_anthropic_capture.py::test_valid_anthropic_managed_credentials_capture_bounded_calls \
+            tests/integration/test_gemini_capture.py::test_valid_gemini_managed_credentials_capture_bounded_calls \
+            tests/integration/test_cursor_capture.py::test_valid_cursor_managed_credentials_capture_bounded_calls
       - name: Upload backend log on failure
         if: failure()
         uses: actions/upload-artifact@v4

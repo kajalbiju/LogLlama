@@ -9,6 +9,7 @@ DEFAULT_API_KEY = "llama-dev-key"
 DEFAULT_RUNTIME_KEY = None
 DEFAULT_PROJECT_NAME = "Development"
 MIN_PRIVILEGED_KEY_LENGTH = 32
+MAX_RUNTIME_KEY_LENGTH = 255
 LEGACY_RUNTIME_KEYS = frozenset({"llama-runtime-key"})
 LEGACY_ADMIN_KEYS = frozenset({"llama-admin-key"})
 
@@ -17,6 +18,7 @@ def is_secure_privileged_key(value: str | None) -> bool:
     return bool(
         value
         and len(value) >= MIN_PRIVILEGED_KEY_LENGTH
+        and len(value) <= MAX_RUNTIME_KEY_LENGTH
         and value not in LEGACY_RUNTIME_KEYS
         and value not in LEGACY_ADMIN_KEYS
     )
@@ -149,6 +151,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"{environment_name} must contain at least "
                 f"{MIN_PRIVILEGED_KEY_LENGTH} characters."
+            )
+        if (
+            info.field_name == "default_runtime_key"
+            and len(normalized) > MAX_RUNTIME_KEY_LENGTH
+        ):
+            raise ValueError(
+                "LOGLLAMA_DEFAULT_RUNTIME_KEY must contain at most "
+                f"{MAX_RUNTIME_KEY_LENGTH} characters."
             )
         return normalized
 

@@ -64,8 +64,13 @@ class GeminiAdapter:
 
 def _gemini_usage(raw: Any) -> Usage:
     usage = read_value(raw, "usage_metadata") or read_value(raw, "usage")
-    input_tokens = _int_value(usage, "prompt_token_count", "input_tokens")
-    output_tokens = _int_value(usage, "candidates_token_count", "output_tokens")
+    input_tokens = _int_value(usage, "prompt_token_count", "input_tokens", "total_input_tokens")
+    output_tokens = _int_value(
+        usage,
+        "candidates_token_count",
+        "output_tokens",
+        "total_output_tokens",
+    )
     total_tokens = _int_value(usage, "total_token_count", "total_tokens")
     return Usage(input_tokens, output_tokens, total_tokens or input_tokens + output_tokens)
 

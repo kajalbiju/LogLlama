@@ -37,6 +37,12 @@ class LogLlamaConfig:
     sample_rate: float = 1.0
     capture_errors: bool = True
     capture_otel: bool = True
+    delivery_queue_size: int = 1000
+    delivery_batch_size: int = 20
+    delivery_flush_interval_seconds: float = 0.25
+    delivery_max_attempts: int = 3
+    delivery_retry_backoff_seconds: float = 0.25
+    delivery_spool_path: str | None = None
     enabled: bool = True
 
 
@@ -65,6 +71,12 @@ def init(
     sample_rate: float | None = None,
     capture_errors: bool | None = None,
     capture_otel: bool | None = None,
+    delivery_queue_size: int | None = None,
+    delivery_batch_size: int | None = None,
+    delivery_flush_interval_seconds: float | None = None,
+    delivery_max_attempts: int | None = None,
+    delivery_retry_backoff_seconds: float | None = None,
+    delivery_spool_path: str | None = None,
     enabled: bool | None = None,
 ) -> LogLlamaConfig:
     """Configure LogLlama once for the current Python process."""
@@ -93,6 +105,31 @@ def init(
         "sample_rate": _clamp_sample_rate(sample_rate if sample_rate is not None else env_config.sample_rate),
         "capture_errors": capture_errors if capture_errors is not None else env_config.capture_errors,
         "capture_otel": capture_otel if capture_otel is not None else env_config.capture_otel,
+        "delivery_queue_size": _positive_int(
+            delivery_queue_size,
+            env_config.delivery_queue_size,
+        ),
+        "delivery_batch_size": _positive_int(
+            delivery_batch_size,
+            env_config.delivery_batch_size,
+        ),
+        "delivery_flush_interval_seconds": _positive_float(
+            delivery_flush_interval_seconds,
+            env_config.delivery_flush_interval_seconds,
+        ),
+        "delivery_max_attempts": _positive_int(
+            delivery_max_attempts,
+            env_config.delivery_max_attempts,
+        ),
+        "delivery_retry_backoff_seconds": _positive_float(
+            delivery_retry_backoff_seconds,
+            env_config.delivery_retry_backoff_seconds,
+        ),
+        "delivery_spool_path": (
+            delivery_spool_path
+            if delivery_spool_path is not None
+            else env_config.delivery_spool_path
+        ),
         "enabled": enabled if enabled is not None else env_config.enabled,
     }
     _config = replace(_config, **updates)
@@ -129,6 +166,27 @@ def config_from_env() -> LogLlamaConfig:
         sample_rate=_clamp_sample_rate(_float_env("LOGLLAMA_SAMPLE_RATE", _config.sample_rate)),
         capture_errors=_bool_env("LOGLLAMA_CAPTURE_ERRORS", _config.capture_errors),
         capture_otel=_bool_env("LOGLLAMA_CAPTURE_OTEL", _config.capture_otel),
+        delivery_queue_size=_positive_int_env(
+            "LOGLLAMA_DELIVERY_QUEUE_SIZE",
+            _config.delivery_queue_size,
+        ),
+        delivery_batch_size=_positive_int_env(
+            "LOGLLAMA_DELIVERY_BATCH_SIZE",
+            _config.delivery_batch_size,
+        ),
+        delivery_flush_interval_seconds=_positive_float_env(
+            "LOGLLAMA_DELIVERY_FLUSH_INTERVAL_SECONDS",
+            _config.delivery_flush_interval_seconds,
+        ),
+        delivery_max_attempts=_positive_int_env(
+            "LOGLLAMA_DELIVERY_MAX_ATTEMPTS",
+            _config.delivery_max_attempts,
+        ),
+        delivery_retry_backoff_seconds=_positive_float_env(
+            "LOGLLAMA_DELIVERY_RETRY_BACKOFF_SECONDS",
+            _config.delivery_retry_backoff_seconds,
+        ),
+        delivery_spool_path=os.getenv("LOGLLAMA_DELIVERY_SPOOL_PATH") or _config.delivery_spool_path,
         enabled=_bool_env("LOGLLAMA_ENABLED", _config.enabled),
     )
 
@@ -206,6 +264,23 @@ def _int_env(name: str, default: int | None) -> int | None:
         return int(value)
     except ValueError:
         return default
+
+
+def _positive_int(value: int | None, default: int) -> int:
+    return value if value is not None and value > 0 else default
+
+
+def _positive_float(value: float | None, default: float) -> float:
+    return value if value is not None and value > 0 else default
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    value = _int_env(name, default)
+    return value if value is not None and value > 0 else default
+
+
+def _positive_float_env(name: str, default: float) -> float:
+    return _positive_float(_float_env(name, default), default)
 
 
 def _list_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
