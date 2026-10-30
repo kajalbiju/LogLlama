@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from .client import monotonic_ms, new_external_id, now_iso, post_event_async, safe_json
 from .config import LogLlamaConfig, get_config, get_context_metadata
+from .redaction import redact_text
 
 
 CORRELATION_FIELDS = {
@@ -166,7 +167,7 @@ def _wrap_call(original: Callable[..., Any], operation: str, config: LogLlamaCon
                         "response": None,
                         "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
                         "latency_ms": monotonic_ms(start),
-                        "error": {"type": exc.__class__.__name__, "message": str(exc)},
+                        "error": {"type": exc.__class__.__name__, "message": redact_text(str(exc))},
                         "provider_request_id": _extract_provider_request_id(exc),
                         "retry_count": _extract_retry_count(exc, explicit_retry_count),
                         "model_parameters": model_parameters,

@@ -50,15 +50,13 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-    defaults:
-      run:
-        working-directory: sdk/python
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - name: Install SDK provider and test dependencies
+        working-directory: sdk/python
         run: python -m pip install -e ".[openai,gemini,test]"
       - name: Install backend dependencies
         working-directory: backend
@@ -72,29 +70,24 @@ jobs:
             echo "OPENAI_API_KEY and GEMINI_API_KEY secrets are required."
             exit 1
           }
-      - name: Generate CI admin and runtime keys
-        working-directory: .
+      - name: Generate CI account password
         run: |
-          admin_key="$(openssl rand -hex 32)"
-          runtime_key="$(openssl rand -hex 32)"
-          echo "::add-mask::$admin_key"
-          echo "::add-mask::$runtime_key"
-          echo "LOGLLAMA_ADMIN_API_KEY=$admin_key" >> "$GITHUB_ENV"
-          echo "LOGLLAMA_DEFAULT_RUNTIME_KEY=$runtime_key" >> "$GITHUB_ENV"
-          echo "LOGLLAMA_RUNTIME_KEY=$runtime_key" >> "$GITHUB_ENV"
+          password="$(openssl rand -hex 24)"
+          echo "::add-mask::$password"
+          echo "LOGLLAMA_PROVISION_PASSWORD=$password" >> "$GITHUB_ENV"
+          echo "LOGLLAMA_DASHBOARD_PASSWORD=$password" >> "$GITHUB_ENV"
       - name: Bootstrap persistent OpenBao
         working-directory: .
         run: scripts/openbao-local-bootstrap.sh
-      - name: Start LogLlama backend with OpenBao
+      - name: Migrate and start LogLlama backend with OpenBao
         working-directory: backend
         env:
           DATABASE_URL: postgresql+asyncpg://logllama:logllama@localhost:5432/logllama
-          LOGLLAMA_DEFAULT_API_KEY: llama-dev-key
-          LOGLLAMA_DEFAULT_PROJECT_NAME: CI Integration
         run: |
           set -a
           source ../.openbao/backend.env
           set +a
+          python -m alembic upgrade head
           python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/logllama-backend.log 2>&1 &
           for attempt in {1..30}; do
             curl -fsS http://127.0.0.1:8000/health && exit 0
@@ -102,30 +95,21 @@ jobs:
           done
           cat /tmp/logllama-backend.log
           exit 1
-      - name: Seed Provider-tab credentials
+      - name: Provision CI account, project, keys, and provider credentials
+        working-directory: .
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        working-directory: .
         run: |
-          for provider in openai gemini; do
-            if [ "$provider" = openai ]; then
-              api_key="$OPENAI_API_KEY"
-            else
-              api_key="$GEMINI_API_KEY"
-            fi
-            jq -n \
-              --arg provider "$provider" \
-              --arg api_key "$api_key" \
-              '{provider: $provider, name: "ci-default", api_key: $api_key}' |
-              curl -fsS \
-                -H "Content-Type: application/json" \
-                -H "X-LogLlama-Admin-Key: $LOGLLAMA_ADMIN_API_KEY" \
-                --data-binary @- \
-                http://127.0.0.1:8000/api/admin/provider-credentials \
-                >/dev/null
-          done
-          unset OPENAI_API_KEY GEMINI_API_KEY api_key
+          python3 scripts/provision_local.py \
+            --endpoint http://127.0.0.1:8000 \
+            --email ci@logllama.test \
+            --organization "CI Integration" \
+            --project "CI Integration" \
+            --credential openai=OPENAI_API_KEY \
+            --credential gemini=GEMINI_API_KEY \
+            --format env >> "$GITHUB_ENV"
+          unset OPENAI_API_KEY GEMINI_API_KEY
       - name: Verify OpenBao-backed runtime credentials
         working-directory: .
         run: |
@@ -147,10 +131,10 @@ jobs:
           LOGLLAMA_OPENAI_SUCCESS_RUNS: "5"
           RUN_LOGLLAMA_GEMINI_INTEGRATION: "1"
           LOGLLAMA_GEMINI_SUCCESS_RUNS: "5"
-          LOGLLAMA_API_KEY: llama-dev-key
           LOGLLAMA_ENDPOINT: http://127.0.0.1:8000
           LOGLLAMA_OPENAI_TEST_MODEL: ${{ vars.LOGLLAMA_OPENAI_TEST_MODEL || 'gpt-5-nano' }}
           LOGLLAMA_GEMINI_TEST_MODEL: ${{ vars.LOGLLAMA_GEMINI_TEST_MODEL || 'gemini-3.5-flash-lite' }}
+        working-directory: sdk/python
         run: |
           unset OPENAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY ANTHROPIC_API_KEY
           python -m pytest -q --durations=2 \

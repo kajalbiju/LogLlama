@@ -1,6 +1,18 @@
 # LogLlama Production Readiness Plan
 
-Last updated: 2026-07-29
+Last updated: 2026-10-26
+
+## Progress since 2026-07-29
+
+Completed in the product-foundation change:
+
+- Phase 1 (migrations): Alembic with an idempotent baseline and advisory-locked migrations. Startup verifies the revision and performs no DDL.
+- Phase 2 (partial): organizations, users, memberships, and roles; email and password sign-in with HTTP-only session cookies and a CSRF header; project-scoped APIs. The shared admin key and `VITE_LOGLLAMA_ADMIN_KEY` are removed. Still open: OIDC/SAML, MFA, audit log, and rate limiting on authentication.
+- Phase 3 (partial): API keys are stored as SHA-256 hashes with display prefixes, support expiry and revocation, and are created with a one-time reveal. Still open: overlapping rotation and last-used rate limits.
+- Phase 10 (partial): the Python SDK and new TypeScript SDK send batches through a bounded queue, drop and count overflow, and never block a model call.
+- Pricing: Anthropic and Gemini models are priced, with tiered rates where published. Unknown models store a null cost instead of zero.
+
+Not started: Phases 4 to 9 and Phase 11, which cover workload identity, OpenBao HA, credential state machines, and comparison-spend controls.
 
 ## Purpose
 

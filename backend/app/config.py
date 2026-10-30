@@ -8,9 +8,14 @@ DEFAULT_DATABASE_URL = "postgresql+asyncpg://logllama:logllama@localhost:5432/lo
 DEFAULT_API_KEY = "llama-dev-key"
 DEFAULT_RUNTIME_KEY = None
 DEFAULT_PROJECT_NAME = "Development"
+DEFAULT_CORS_ORIGINS = (
+    "http://localhost:5173,http://127.0.0.1:5173,"
+    "http://localhost:5174,http://127.0.0.1:5174,"
+    "http://localhost:5175,http://127.0.0.1:5175,"
+    "http://localhost:5176,http://127.0.0.1:5176"
+)
 MIN_PRIVILEGED_KEY_LENGTH = 32
 LEGACY_RUNTIME_KEYS = frozenset({"llama-runtime-key"})
-LEGACY_ADMIN_KEYS = frozenset({"llama-admin-key"})
 
 
 def is_secure_privileged_key(value: str | None) -> bool:
@@ -18,7 +23,6 @@ def is_secure_privileged_key(value: str | None) -> bool:
         value
         and len(value) >= MIN_PRIVILEGED_KEY_LENGTH
         and value not in LEGACY_RUNTIME_KEYS
-        and value not in LEGACY_ADMIN_KEYS
     )
 
 
@@ -32,7 +36,6 @@ class Settings(BaseSettings):
         default=DEFAULT_RUNTIME_KEY, validation_alias="LOGLLAMA_DEFAULT_RUNTIME_KEY"
     )
     default_project_name: str = Field(default=DEFAULT_PROJECT_NAME, validation_alias="LOGLLAMA_DEFAULT_PROJECT_NAME")
-    admin_api_key: str | None = Field(default=None, validation_alias="LOGLLAMA_ADMIN_API_KEY")
     secret_backend: str = Field(default="memory", validation_alias="LOGLLAMA_SECRET_BACKEND")
     allow_ephemeral_secrets: bool = Field(
         default=False,
@@ -92,21 +95,25 @@ class Settings(BaseSettings):
         gt=0,
         validation_alias="LOGLLAMA_SECRET_STORE_TIMEOUT_SECONDS",
     )
-    cors_origins: list[str] = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-        "http://localhost:5175",
-        "http://127.0.0.1:5175",
-        "http://localhost:5176",
-        "http://127.0.0.1:5176",
-    ]
+    allow_signup: bool = Field(default=True, validation_alias="LOGLLAMA_ALLOW_SIGNUP")
+    session_ttl_hours: int = Field(default=12, ge=1, le=24 * 30, validation_alias="LOGLLAMA_SESSION_TTL_HOURS")
+    cookie_secure: bool = Field(default=False, validation_alias="LOGLLAMA_COOKIE_SECURE")
+    cors_origins_raw: str = Field(default=DEFAULT_CORS_ORIGINS, validation_alias="LOGLLAMA_CORS_ORIGINS")
+    max_batch_events: int = Field(default=500, ge=1, le=5000, validation_alias="LOGLLAMA_MAX_BATCH_EVENTS")
+    max_request_bytes: int = Field(
+        default=5_000_000,
+        ge=1024,
+        validation_alias="LOGLLAMA_MAX_REQUEST_BYTES",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore",
     )
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins_raw.split(",") if origin.strip()]
 
     @field_validator(
         "database_url",
@@ -125,29 +132,19 @@ class Settings(BaseSettings):
         }
         return defaults[info.field_name]
 
-    @field_validator("default_runtime_key", "admin_api_key", mode="before")
+    @field_validator("default_runtime_key", mode="before")
     @classmethod
-    def privileged_keys_must_be_explicit_and_strong(cls, value: Any, info):
+    def runtime_key_must_be_explicit_and_strong(cls, value: Any):
         if value is None:
             return None
         if not isinstance(value, str):
             return value
         normalized = value.strip()
-        legacy_values = (
-            LEGACY_RUNTIME_KEYS
-            if info.field_name == "default_runtime_key"
-            else LEGACY_ADMIN_KEYS
-        )
-        if not normalized or normalized in legacy_values:
+        if not normalized or normalized in LEGACY_RUNTIME_KEYS:
             return None
         if len(normalized) < MIN_PRIVILEGED_KEY_LENGTH:
-            environment_name = (
-                "LOGLLAMA_DEFAULT_RUNTIME_KEY"
-                if info.field_name == "default_runtime_key"
-                else "LOGLLAMA_ADMIN_API_KEY"
-            )
             raise ValueError(
-                f"{environment_name} must contain at least "
+                "LOGLLAMA_DEFAULT_RUNTIME_KEY must contain at least "
                 f"{MIN_PRIVILEGED_KEY_LENGTH} characters."
             )
         return normalized

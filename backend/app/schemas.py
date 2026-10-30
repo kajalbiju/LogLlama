@@ -1,9 +1,11 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from .security import PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH
 
 
 class UsagePayload(BaseModel):
@@ -53,6 +55,15 @@ class EventIn(BaseModel):
     captured_at: datetime | None = None
 
 
+class BatchEventsIn(BaseModel):
+    events: list[EventIn] = Field(min_length=1)
+
+
+class BatchIngestOut(BaseModel):
+    accepted: int
+    duplicates: int
+
+
 class RequestOut(BaseModel):
     id: UUID
     external_id: str | None
@@ -68,7 +79,7 @@ class RequestOut(BaseModel):
     input_tokens: int
     output_tokens: int
     total_tokens: int
-    cost_usd: Decimal
+    cost_usd: Decimal | None
     latency_ms: int
     error_type: str | None
     error_message: str | None
@@ -124,6 +135,100 @@ class SummaryOut(BaseModel):
     error_rate: float
     total_tokens: int
     series: list[MetricPoint]
+
+
+# Accounts, organizations, and keys
+
+
+class SignupIn(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
+    name: str = Field(default="", max_length=120)
+    organization_name: str = Field(min_length=1, max_length=120)
+
+
+class LoginIn(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+
+
+class UserOut(BaseModel):
+    id: UUID
+    email: str
+    name: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OrganizationOut(BaseModel):
+    id: UUID
+    name: str
+    slug: str
+    role: str | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SessionOut(BaseModel):
+    user: UserOut
+    organizations: list[OrganizationOut]
+
+
+class OrganizationCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class MemberOut(BaseModel):
+    user_id: UUID
+    email: str
+    name: str
+    role: str
+
+
+class MemberUpsert(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    role: Literal["owner", "credential_admin", "test_approver", "developer", "viewer"]
+
+
+class ProjectOut(BaseModel):
+    id: UUID
+    organization_id: UUID
+    name: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectCreate(BaseModel):
+    organization_id: UUID
+    name: str = Field(min_length=1, max_length=120)
+
+
+class ApiKeyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    kind: Literal["ingest", "runtime"] = "ingest"
+    expires_in_days: int | None = Field(default=None, ge=1, le=3650)
+
+
+class ApiKeyOut(BaseModel):
+    id: UUID
+    name: str
+    kind: str
+    key_prefix: str
+    created_at: datetime
+    last_used_at: datetime | None
+    expires_at: datetime | None
+    revoked_at: datetime | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ApiKeyCreatedOut(ApiKeyOut):
+    # Returned exactly once, at creation. It is never stored in plaintext and cannot be recovered.
+    key: str
+
+
+# Provider credentials and comparison tests
 
 
 class ProviderCredentialCreate(BaseModel):

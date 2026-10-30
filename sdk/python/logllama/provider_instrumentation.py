@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from .client import monotonic_ms, new_external_id, now_iso, post_event_async
 from .config import LogLlamaConfig, get_config
+from .redaction import redact_text
 from .openai import (
     _build_event_metadata,
     _extract_model_parameters,
@@ -229,7 +230,7 @@ def _capture_error(
             "response": None,
             "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
             "latency_ms": monotonic_ms(start),
-            "error": {"type": exc.__class__.__name__, "message": str(exc)},
+            "error": {"type": exc.__class__.__name__, "message": redact_text(str(exc))},
             "provider_request_id": _extract_provider_request_id(exc),
             "retry_count": _extract_retry_count(exc, explicit_retry_count),
             "model_parameters": model_parameters,

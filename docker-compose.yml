@@ -6,7 +6,8 @@ services:
       POSTGRES_PASSWORD: logllama
       POSTGRES_DB: logllama
     ports:
-      - "5432:5432"
+      # Set LOGLLAMA_POSTGRES_HOST_PORT in .env when a native PostgreSQL already uses 5432.
+      - "127.0.0.1:${LOGLLAMA_POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

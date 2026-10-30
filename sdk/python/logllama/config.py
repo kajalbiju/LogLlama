@@ -38,6 +38,11 @@ class LogLlamaConfig:
     capture_errors: bool = True
     capture_otel: bool = True
     enabled: bool = True
+    # Events are queued in memory and sent in batches. When the queue is full, new events are dropped
+    # and counted, so telemetry never blocks a provider call.
+    batch_size: int = 50
+    flush_interval_seconds: float = 1.0
+    max_queue_size: int = 10_000
 
 
 _config = LogLlamaConfig()
@@ -66,6 +71,9 @@ def init(
     capture_errors: bool | None = None,
     capture_otel: bool | None = None,
     enabled: bool | None = None,
+    batch_size: int | None = None,
+    flush_interval_seconds: float | None = None,
+    max_queue_size: int | None = None,
 ) -> LogLlamaConfig:
     """Configure LogLlama once for the current Python process."""
     global _config
@@ -94,6 +102,11 @@ def init(
         "capture_errors": capture_errors if capture_errors is not None else env_config.capture_errors,
         "capture_otel": capture_otel if capture_otel is not None else env_config.capture_otel,
         "enabled": enabled if enabled is not None else env_config.enabled,
+        "batch_size": batch_size if batch_size is not None else env_config.batch_size,
+        "flush_interval_seconds": (
+            flush_interval_seconds if flush_interval_seconds is not None else env_config.flush_interval_seconds
+        ),
+        "max_queue_size": max_queue_size if max_queue_size is not None else env_config.max_queue_size,
     }
     _config = replace(_config, **updates)
     return _config
@@ -130,6 +143,9 @@ def config_from_env() -> LogLlamaConfig:
         capture_errors=_bool_env("LOGLLAMA_CAPTURE_ERRORS", _config.capture_errors),
         capture_otel=_bool_env("LOGLLAMA_CAPTURE_OTEL", _config.capture_otel),
         enabled=_bool_env("LOGLLAMA_ENABLED", _config.enabled),
+        batch_size=_int_env("LOGLLAMA_BATCH_SIZE", _config.batch_size) or _config.batch_size,
+        flush_interval_seconds=_float_env("LOGLLAMA_FLUSH_INTERVAL_SECONDS", _config.flush_interval_seconds),
+        max_queue_size=_int_env("LOGLLAMA_MAX_QUEUE_SIZE", _config.max_queue_size) or _config.max_queue_size,
     )
 
 

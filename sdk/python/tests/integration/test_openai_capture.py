@@ -11,6 +11,8 @@ import pytest
 import logllama
 from logllama.config import load_dotenv
 
+from .dashboard_client import dashboard_get, require_dashboard_env
+
 
 pytestmark = pytest.mark.integration
 
@@ -48,6 +50,7 @@ def _require_real_openai() -> None:
         pytest.fail("LOGLLAMA_API_KEY is required when RUN_LOGLLAMA_OPENAI_INTEGRATION=1.")
     if not os.getenv("LOGLLAMA_RUNTIME_KEY"):
         pytest.fail("LOGLLAMA_RUNTIME_KEY is required for Provider-tab integration tests.")
+    require_dashboard_env()
 
 
 def _success_runs() -> int:
@@ -70,10 +73,8 @@ def _require_backend() -> str:
 
 def _wait_for_backend_request(endpoint: str, request_id: str) -> dict:
     deadline = time.monotonic() + 10
-    query = parse.urlencode({"limit": 5, "request_id": request_id})
     while time.monotonic() < deadline:
-        with request.urlopen(f"{endpoint}/api/requests?{query}", timeout=3) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        payload = dashboard_get(endpoint, "/api/requests", {"limit": 5, "request_id": request_id})
         if payload.get("requests"):
             return payload["requests"][0]
         time.sleep(0.25)

@@ -23,44 +23,47 @@ def test_blank_environment_values_fall_back_to_dev_defaults(monkeypatch):
     assert settings.default_project_name == DEFAULT_PROJECT_NAME
 
 
-@pytest.mark.parametrize(
-    ("environment_name", "legacy_value", "field_name"),
-    [
-        ("LOGLLAMA_DEFAULT_RUNTIME_KEY", "llama-runtime-key", "default_runtime_key"),
-        ("LOGLLAMA_ADMIN_API_KEY", "llama-admin-key", "admin_api_key"),
-    ],
-)
-def test_legacy_privileged_keys_disable_feature(
-    monkeypatch, environment_name, legacy_value, field_name
-):
-    monkeypatch.setenv(environment_name, legacy_value)
+def test_legacy_runtime_key_disables_the_feature(monkeypatch):
+    monkeypatch.setenv("LOGLLAMA_DEFAULT_RUNTIME_KEY", "llama-runtime-key")
 
-    configured = Settings()
-
-    assert getattr(configured, field_name) is None
+    assert Settings().default_runtime_key is None
 
 
-@pytest.mark.parametrize(
-    "environment_name",
-    ["LOGLLAMA_DEFAULT_RUNTIME_KEY", "LOGLLAMA_ADMIN_API_KEY"],
-)
-def test_short_privileged_keys_are_rejected(monkeypatch, environment_name):
-    monkeypatch.setenv(environment_name, "short-custom-key")
+def test_short_runtime_key_is_rejected(monkeypatch):
+    monkeypatch.setenv("LOGLLAMA_DEFAULT_RUNTIME_KEY", "short-custom-key")
 
     with pytest.raises(ValidationError, match="must contain at least"):
         Settings()
 
 
-def test_strong_privileged_keys_are_accepted(monkeypatch):
+def test_strong_runtime_key_is_accepted(monkeypatch):
     runtime_key = "r" * MIN_PRIVILEGED_KEY_LENGTH
-    admin_key = "a" * MIN_PRIVILEGED_KEY_LENGTH
     monkeypatch.setenv("LOGLLAMA_DEFAULT_RUNTIME_KEY", runtime_key)
-    monkeypatch.setenv("LOGLLAMA_ADMIN_API_KEY", admin_key)
 
-    configured = Settings()
+    assert Settings().default_runtime_key == runtime_key
 
-    assert configured.default_runtime_key == runtime_key
-    assert configured.admin_api_key == admin_key
+
+def test_shared_admin_key_setting_is_no_longer_read(monkeypatch):
+    monkeypatch.setenv("LOGLLAMA_ADMIN_API_KEY", "a" * MIN_PRIVILEGED_KEY_LENGTH)
+
+    assert not hasattr(Settings(), "admin_api_key")
+
+
+def test_cors_origins_are_parsed_from_a_comma_separated_list(monkeypatch):
+    monkeypatch.setenv("LOGLLAMA_CORS_ORIGINS", "https://app.example.com, https://admin.example.com ,")
+
+    assert Settings().cors_origins == ["https://app.example.com", "https://admin.example.com"]
+
+
+def test_session_and_cookie_defaults(monkeypatch):
+    for name in ("LOGLLAMA_SESSION_TTL_HOURS", "LOGLLAMA_COOKIE_SECURE", "LOGLLAMA_ALLOW_SIGNUP"):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = Settings()
+
+    assert settings.session_ttl_hours == 12
+    assert settings.cookie_secure is False
+    assert settings.allow_signup is True
 
 
 @pytest.mark.parametrize("backend", ["memory", "aws", "vault", "openbao"])
